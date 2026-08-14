@@ -1,0 +1,50 @@
+{
+  "environment": {
+    "baseUrl": "https://go-dev.happymoney.com"
+  },
+  "account": {
+    "email": "wgwo+applywebtest20260813@happymoney.com"
+  },
+  "loanDetails": {
+    "desiredLoanAmount": 5000
+  },
+  "aboutYou": {
+    "firstName": "ZENAIDA",
+    "lastName": "ACHURRA",
+    "suffix": "None",
+    "dateOfBirth": "11/01/1968",
+    "citizenshipStatus": "US Citizen"
+  },
+  "contactDetails": {
+    "streetAddress": "4317 W 125TH ST",
+    "aptSuiteOther": "",
+    "city": "LEAWOOD",
+    "state": "Kansas",
+    "zipCode": "66206",
+    "phoneNumber": "3127381938"
+  },
+  "financialDetails": {
+    "totalAnnualIncome": 100000,
+    "incomeType": "Full-time",
+    "housingPayment": 100,
+    "housingPaymentType": "Rent"
+  },
+  "verifyIdentity": {
+    "ssnLast4": "6481",
+    "occupation": "Software Engineer",
+    "employerName": "Employer Pass"
+  },
+  "offerSelection": {
+    "loanAmount": "$5,000",
+    "applyAutopayDiscount": true,
+    "offerIndex": 0
+  },
+  "otp": {
+    "mode": "skip"
+  },
+  "documentUpload": {
+    "ssnCardPath": "./test-docs/ssn-card.png",
+    "addressVerificationPath": "./test-docs/address-verification.png",
+    "govIdPath": "./test-docs/gov-id.png"
+  }
+}

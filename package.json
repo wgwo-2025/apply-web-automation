@@ -1,0 +1,13 @@
+{
+  "name": "apply-web-automation",
+  "private": true,
+  "version": "1.0.0",
+  "description": "Playwright script that walks the go-dev.happymoney.com apply funnel end to end using a swappable JSON test-data file.",
+  "scripts": {
+    "install-browsers": "playwright install chromium",
+    "apply": "node apply-flow.js"
+  },
+  "dependencies": {
+    "playwright": "^1.48.0"
+  }
+}
