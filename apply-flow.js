@@ -234,8 +234,20 @@ async function fillFinancialDetails(page, data) {
 
 async function confirmApplicationSummary(page) {
   await page.getByRole('button', { name: 'Agree, Verify and Complete' }).click();
-  await page.waitForURL(/\/offer\/offers\//, { timeout: 20000 });
+  await page.waitForURL(/\/offer\/offers\//, { timeout: 60000 });
 }
+
+// The offers page polls for the decision rather than blocking on it: see
+// offers-mfe/src/hooks/usePollingApplicationById.js, MAX_OFFER_ATTEMPTS (24) x
+// POLLING_INTERVAL_IN_SECONDS (5) = 120 SECONDS. Offer generation genuinely
+// takes that long sometimes.
+//
+// Waiting less than the page's own budget reports a failure the app had not
+// reached yet. Reloading is worse than waiting: polling state lives in a module
+// -level object whose `attempts` resets to 1 on mount, so a reload throws away
+// the progress made so far and starts the 120s again.
+const OFFERS_POLL_BUDGET_MS = 24 * 5 * 1000;
+const OFFERS_POLL_TIMEOUT_MS = OFFERS_POLL_BUDGET_MS + 30000; // + margin for render
 
 /** Dumps what is actually on the offers page, so a miss is diagnosable in one round. */
 async function reportOffersPageState(page) {
@@ -304,20 +316,16 @@ async function selectOffer(page, data) {
   // will not necessarily poll itself into the right state.
   const offerRadios = page.getByRole('radio');
   try {
-    await offerRadios.first().waitFor({ timeout: 45000 });
+    await offerRadios.first().waitFor({ timeout: OFFERS_POLL_TIMEOUT_MS });
   } catch {
-    console.log('  No offers rendered yet — reloading once.');
-    await page.reload();
-    try {
-      await offerRadios.first().waitFor({ timeout: 45000 });
-    } catch {
-      await reportOffersPageState(page);
-      throw new Error(
-        'Offers never rendered. See the dump above and the screenshot — if LoanPro ' +
-        'has offers for this application but the page shows none, the mismatch is ' +
-        'in the apply-bff fetch, not in these selectors.'
-      );
-    }
+    await reportOffersPageState(page);
+    throw new Error(
+      `Offers never rendered within ${OFFERS_POLL_TIMEOUT_MS / 1000}s, which is past the ` +
+      "page's own polling budget — so it gave up too, and this is not a wait that is " +
+      'too short. See the dump above and the screenshot: if LoanPro has offers for ' +
+      'this application but the page shows none, the mismatch is in the apply-bff ' +
+      'fetch, not in these selectors.'
+    );
   }
   const count = await offerRadios.count();
   const index = cfg.offerIndex ?? 0;
