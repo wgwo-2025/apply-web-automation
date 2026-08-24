@@ -56,15 +56,42 @@ async function selectDropdown(page, buttonName, optionName) {
  */
 async function loginExistingAccount(page, data, account) {
   await page.goto(`${data.environment.baseUrl}/login`);
+
+  // Both fields render through mfe-shared-components/FormInput -> matter's
+  // Input. The email field resolves by accessible name, same as every other
+  // field this script drives. The password field does NOT: input[type=password]
+  // has no implicit ARIA role, so getByRole('textbox') never matches it, and
+  // whether FormInput's `id` reaches the DOM depends on matter internals. Match
+  // on the type attribute instead — that is true regardless.
   await page.getByRole('textbox', { name: 'Email Address' }).fill(account.email);
-  // The password field is type="password", which has no implicit textbox role.
-  await page.locator('#password').fill(account.password);
-  await page.getByRole('button', { name: 'Log In' }).click();
+  await page.locator('input[type="password"]').fill(account.password);
+
+  // The submit button is disabled until react-hook-form marks the form valid,
+  // so clicking immediately after fill() can be a no-op.
+  const submit = page.getByRole('button', { name: 'Log In' });
+  await waitForEnabled(submit, 15000);
+  await submit.click();
 
   // A seeded application sits at sub-status 60 (Started), so apply-web routes
   // through /apply/route/borrower and lands on loan-details — the same place
   // account creation would have left us.
-  await page.waitForURL(/\/apply\/loan-details\//, { timeout: 30000 });
+  try {
+    await page.waitForURL(/\/apply\/loan-details\//, { timeout: 30000 });
+  } catch (err) {
+    // Say what actually happened rather than just timing out on a regex.
+    const shot = `login-failure-${Date.now()}.png`;
+    await page.screenshot({ path: shot, fullPage: true }).catch(() => {});
+    const alertText = await page.getByRole('alert').first().textContent().catch(() => null);
+    throw new Error(
+      `Login did not reach loan-details.\n` +
+      `  landed on : ${page.url()}\n` +
+      `  page alert: ${alertText ? alertText.trim() : '(none)'}\n` +
+      `  screenshot: ${shot}\n` +
+      `  If the alert mentions matching records, the credentials are wrong. If the URL\n` +
+      `  is still /login with no alert, the form never submitted. If it is some other\n` +
+      `  /apply route, the seeded application is not at sub-status 60.`
+    );
+  }
   console.log(`Logged in as ${account.email} — resumed application ${applicationIdFromUrl(page.url())}`);
 }
 
