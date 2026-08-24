@@ -104,28 +104,72 @@ async function loginExistingAccount(page, data, account) {
   await waitForEnabled(submit, 15000);
   await submit.click();
 
-  // A seeded application sits at sub-status 60 (Started), so apply-web routes
-  // through /apply/route/borrower and lands on loan-details — the same place
-  // account creation would have left us.
+  // apply-web routes through /apply/route/borrower to the first INCOMPLETE step,
+  // which is not necessarily loan-details: an application that already carries a
+  // Requested Loan Amount (cf131) resumes at about-you instead. Accept any apply
+  // step and let walkApplySteps() continue from wherever we land.
   try {
-    await page.waitForURL(/\/apply\/loan-details\//, { timeout: 30000 });
+    await page.waitForURL(/\/apply\//, { timeout: 30000 });
   } catch (err) {
     // Say what actually happened rather than just timing out on a regex.
     const shot = `login-failure-${Date.now()}.png`;
     await page.screenshot({ path: shot, fullPage: true }).catch(() => {});
     const alertText = await page.getByRole('alert').first().textContent().catch(() => null);
     throw new Error(
-      `Login did not reach loan-details.\n` +
+      `Login did not reach the apply funnel.\n` +
       `  landed on : ${page.url()}\n` +
       `  page alert: ${alertText ? alertText.trim() : '(none)'}\n` +
       `  screenshot: ${shot}\n` +
       `  If the alert mentions matching records, the credentials are wrong. If the URL\n` +
       `  is still /login with no alert, the form never submitted — check whether the\n` +
-      `  "Login with Password" step switch actually rendered the email+password form.\n` +
-      `  If it is some other /apply route, the seeded application is not at sub-status 60.`
+      `  "Login with Password" step switch actually rendered the email+password form.`
     );
   }
-  console.log(`Logged in as ${account.email} — resumed application ${applicationIdFromUrl(page.url())}`);
+  console.log(`Logged in as ${account.email} — resumed application ${applicationIdFromUrl(page.url())} at ${stepNameFromUrl(page.url())}`);
+}
+
+/**
+ * The apply section, in order. apply-web resumes a returning borrower at the
+ * first INCOMPLETE step (RouteBorrower), so the entry point depends on how far
+ * that application already got — not on its sub-status. Driving a fixed
+ * sequence breaks the moment an application is partly filled; drive whatever
+ * step is actually on screen instead.
+ */
+const APPLY_STEPS = [
+  { name: 'loan-details', re: /\/apply\/loan-details\//, run: (p, d) => fillLoanDetails(p, d) },
+  { name: 'about-you', re: /\/apply\/about-you\//, run: (p, d) => fillAboutYou(p, d) },
+  { name: 'contact-details', re: /\/apply\/contact-details\//, run: (p, d) => fillContactDetails(p, d) },
+  { name: 'financial-details', re: /\/apply\/financial-details\//, run: (p, d) => fillFinancialDetails(p, d) },
+  { name: 'application-summary', re: /\/apply\/application-summary\//, run: (p) => confirmApplicationSummary(p) },
+];
+
+function stepNameFromUrl(url) {
+  const step = APPLY_STEPS.find((x) => x.re.test(String(url)));
+  if (step) return step.name;
+  const m = String(url).match(/\/apply\/([^/?#]+)/);
+  return m ? m[1] : 'an unrecognised page';
+}
+
+async function walkApplySteps(page, data) {
+  // + 2 so a legitimate re-render of the same step cannot spin forever.
+  for (let guard = 0; guard < APPLY_STEPS.length + 2; guard += 1) {
+    const url = page.url();
+    const step = APPLY_STEPS.find((x) => x.re.test(url));
+    if (!step) {
+      if (/\/apply\/application-selection/.test(url)) {
+        throw new Error(
+          'Landed on /apply/application-selection — this borrower has more than one ' +
+          'application (ENABLE_APPLICATION_SELECTION is ON). Accounts are single-use; ' +
+          'use a fresh one.'
+        );
+      }
+      return; // left the apply section — offers, decline, etc.
+    }
+    console.log(`  step: ${step.name}`);
+    await step.run(page, data);
+    await page.waitForURL((u) => !step.re.test(String(u)), { timeout: 30000 });
+  }
+  throw new Error(`Stuck in the apply section at ${page.url()} — step did not advance.`);
 }
 
 async function fillLoanDetails(page, data) {
@@ -379,20 +423,9 @@ async function run() {
 
   reportFeatureFlags(flags);
 
-  await fillLoanDetails(page, data);
+  await walkApplySteps(page, data);
 
-  await page.waitForURL(/\/apply\/about-you\//, { timeout: 20000 });
-  await fillAboutYou(page, data);
-
-  await page.waitForURL(/\/apply\/contact-details\//, { timeout: 20000 });
-  await fillContactDetails(page, data);
-
-  await page.waitForURL(/\/apply\/financial-details\//, { timeout: 20000 });
-  await fillFinancialDetails(page, data);
-
-  await page.waitForURL(/\/apply\/application-summary\//, { timeout: 20000 });
-  await confirmApplicationSummary(page);
-
+  await page.waitForURL(/\/offer\/offers\//, { timeout: 30000 });
   await selectOffer(page, data);
   await verifyIdentity(page, data);
   await handleSmsOtp(page, data);
