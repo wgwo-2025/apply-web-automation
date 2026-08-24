@@ -49,6 +49,15 @@ function claimAccount() {
   return account;
 }
 
+/** True when accounts.json exists and still holds an unused entry. */
+function hasUnusedAccount() {
+  try {
+    return (readPool().accounts || []).some((a) => !a.used);
+  } catch {
+    return false;
+  }
+}
+
 /** Marks an account spent. Called after login succeeds, not before. */
 function markAccountUsed(email) {
   const pool = readPool();
@@ -70,4 +79,4 @@ function resolveAccount(data) {
   return claimAccount();
 }
 
-module.exports = { resolveAccount, claimAccount, markAccountUsed, readPool, POOL_PATH };
+module.exports = { resolveAccount, claimAccount, markAccountUsed, hasUnusedAccount, readPool, POOL_PATH };

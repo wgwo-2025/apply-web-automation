@@ -19,7 +19,7 @@ const {
   waitForSubStatus,
   advancePastUnderwriting,
 } = require('./loanpro');
-const { resolveAccount, markAccountUsed } = require('./accounts');
+const { resolveAccount, markAccountUsed, hasUnusedAccount } = require('./accounts');
 const { seedAccount } = require('./seed-account');
 const { watchFeatureFlags, reportFeatureFlags } = require('./feature-flags');
 
@@ -468,7 +468,24 @@ async function run() {
   // Attach before the first navigation — the LD client evaluates on init.
   const flags = watchFeatureFlags(page);
 
-  const mode = data.account?.mode || 'auto';
+  // "auto" seeds a borrower through the LoanPro API and so needs a token. Rather
+  // than dying on a config file that ships in the repo and will keep overwriting
+  // local preferences, fall back to the pooled accounts when one is available.
+  let mode = data.account?.mode || 'auto';
+  if (mode === 'auto' && !process.env.LOANPRO_TOKEN) {
+    if (hasUnusedAccount()) {
+      console.log('LOANPRO_TOKEN is not set — using the accounts.json pool instead of seeding.');
+      mode = 'login';
+    } else {
+      throw new Error(
+        'account.mode is "auto", which seeds a borrower via the LoanPro API, but ' +
+        'LOANPRO_TOKEN is not set and accounts.json has no unused entry.\n' +
+        '  Either: cp .env.example .env and add LOANPRO_TOKEN (see README),\n' +
+        '  or:     drop a seeded accounts.json in the repo root.'
+      );
+    }
+  }
+
   if (mode === 'auto') {
     console.log('Seeding a fresh borrower...');
     await loginExistingAccount(page, data, await seedAccount(data));
