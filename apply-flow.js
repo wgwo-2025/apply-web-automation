@@ -20,6 +20,7 @@ const {
   advancePastUnderwriting,
 } = require('./loanpro');
 const { resolveAccount } = require('./accounts');
+const { seedAccount } = require('./seed-account');
 
 function loadData() {
   const arg = process.argv.find((a) => a.startsWith('--data='));
@@ -258,7 +259,11 @@ async function run() {
   const browser = await chromium.launch({ headless: false });
   const page = await browser.newPage();
 
-  if ((data.account?.mode || 'create') === 'login') {
+  const mode = data.account?.mode || 'auto';
+  if (mode === 'auto') {
+    console.log('Seeding a fresh borrower...');
+    await loginExistingAccount(page, data, await seedAccount(data));
+  } else if (mode === 'login') {
     await loginExistingAccount(page, data, resolveAccount(data));
   } else {
     // Cloudflare challenges this path and Playwright cannot pass it — see

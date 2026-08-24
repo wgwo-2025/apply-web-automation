@@ -3,7 +3,10 @@
     "baseUrl": "https://go-dev.happymoney.com"
   },
   "account": {
-    "mode": "login"
+    "mode": "auto",
+    "emailPrefix": "qa+awa",
+    "emailDomain": "happymoney.com",
+    "env": "dev"
   },
   "loanDetails": {
     "desiredLoanAmount": 5000

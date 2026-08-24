@@ -44,8 +44,12 @@ the OTP there regardless of what's on the application.
 
 | Mode | Behaviour |
 |---|---|
-| `login` (default in `test-data.json`) | Logs in as a pre-seeded borrower from `accounts.json` and resumes their empty application |
+| `auto` (default) | Seeds a fresh borrower via API immediately before the run, then logs in. Nothing to remember, nothing to run out of |
+| `login` | Logs in as a pre-seeded borrower from `accounts.json` — the manual pool, kept as a fallback |
 | `create` | The original path — creates an account at `/create-account` |
+
+`auto` needs `LOANPRO_TOKEN` (copy `.env.example`). Each run mints a new
+timestamped email, so runs never collide and there is no pool to top up.
 
 **Use `login`.** `/create-account` is the only path covered by the Cloudflare rule
 `WEB-ATTACK - Challenge Account Creation` (managed_challenge on go-dev, go-stage and
@@ -61,20 +65,24 @@ VPN allowlist is the only reason go-dev is reachable at all.
 
 ### Seeding accounts
 
-Each seeded account is a Cognito-**confirmed** borrower linked to an empty LoanPro
+A seeded account is a Cognito-**confirmed** borrower linked to an empty LoanPro
 application at sub-status 60 (Started), so login lands on `/apply/loan-details` — the
-same place account creation would have. **Accounts are single-use:** once a run walks
-the funnel, that application has moved past Started. `accounts.js` claims the next
-unused entry and marks it used before the run starts.
+same place account creation would have. Accounts are single-use: once a run walks the
+funnel, that application has moved past Started.
 
-Copy `accounts.example.json` to `accounts.json` (gitignored) and fill it in. To seed
-more, from the `happy-money-assistant` repo:
+`seed-account.js` builds one on demand under `mode: "auto"`, so normally there is
+nothing to do. `mode: "login"` reads a manual pool from `accounts.json` instead
+(copy `accounts.example.json`); `accounts.js` claims the next unused entry and marks
+it used *before* the run, since a half-walked application is spent either way.
+
+To top up the manual pool, from the `happy-money-assistant` repo:
 
 ```sh
 python3.11 tools/test-user-manager.py create --scope orig --native --tag <unique> --env dev --execute
 ```
 
-It prints the email, password and application id to paste into `accounts.json`.
+That tool is the canonical implementation; `seed-account.js` is a port of it. If the
+two ever disagree, the Python tool is right.
 
 🔴 **Emails are single-use and the flow is one-shot.** `/no-auth/auth/signup` creates
 an *unconfirmed* Cognito user, and the only thing that confirms it is
