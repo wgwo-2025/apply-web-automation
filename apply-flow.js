@@ -174,19 +174,53 @@ async function confirmApplicationSummary(page) {
 async function selectOffer(page, data) {
   const cfg = data.offerSelection;
 
-  const currentAmount = await page.getByRole('button', { name: /^\$[\d,]+$/ }).first().textContent();
-  if (cfg.loanAmount && currentAmount.trim() !== cfg.loanAmount) {
-    await selectDropdown(page, currentAmount.trim(), cfg.loanAmount);
+  // There are TWO offers pages behind the LaunchDarkly flag OFFER_PAGE_VERSION
+  // (offers-mfe/src/pages/Offers/index.js). dev and stage are both 100% rolled
+  // out to "new", which replaces the original "$5,000" dropdown button with an
+  // AmountSlider. Its desktop control is still a SelectDropdown, but the trigger
+  // is a role="button" DIV whose accessible name is not reliably a bare currency
+  // string — which is why matching on /^\$[\d,]+$/ timed out. Find it
+  // structurally by aria-haspopup, and treat it as optional: the slider defaults
+  // to the requested loan amount, so usually there is nothing to change.
+  if (cfg.loanAmount) {
+    const amountTrigger = page.locator('[role="button"][aria-haspopup="listbox"]').first();
+    if (await amountTrigger.count()) {
+      const current = ((await amountTrigger.textContent().catch(() => '')) || '').trim();
+      if (!current.includes(cfg.loanAmount)) {
+        await amountTrigger.click();
+        await page.locator('li[role="option"]')
+          .filter({ hasText: new RegExp(`^\\s*${escapeRegExp(cfg.loanAmount)}\\s*$`) })
+          .first()
+          .click();
+      }
+    } else {
+      console.log(`  No amount selector on this offers page — keeping the default (wanted ${cfg.loanAmount}).`);
+    }
   }
 
+  // The autopay toggle is itself flag-gated (isAutopayDiscountEnabled), so it
+  // may legitimately not render.
   const autopayToggle = page.getByRole('switch', { name: 'Toggle autopay discount' });
-  const isChecked = (await autopayToggle.getAttribute('aria-checked')) === 'true';
-  if (Boolean(cfg.applyAutopayDiscount) !== isChecked) {
-    await autopayToggle.click();
+  if (await autopayToggle.count()) {
+    const isChecked = (await autopayToggle.getAttribute('aria-checked')) === 'true';
+    if (Boolean(cfg.applyAutopayDiscount) !== isChecked) {
+      await autopayToggle.click();
+    }
+  } else if (cfg.applyAutopayDiscount) {
+    console.log('  Autopay discount toggle is not rendered — skipping.');
   }
 
+  // Each OfferCardNew carries a real radio, so this still holds on both pages.
+  // Wait for the list: offers render after the decision resolves, not on load.
   const offerRadios = page.getByRole('radio');
-  await offerRadios.nth(cfg.offerIndex ?? 0).click();
+  await offerRadios.first().waitFor({ timeout: 30000 });
+  const count = await offerRadios.count();
+  const index = cfg.offerIndex ?? 0;
+  if (index >= count) {
+    throw new Error(`offerSelection.offerIndex is ${index} but only ${count} offer(s) rendered.`);
+  }
+  await offerRadios.nth(index).click();
+
   await page.getByRole('button', { name: 'Select this offer' }).click();
   await page.waitForURL(/\/verify\/ssn\//, { timeout: 20000 });
 }
