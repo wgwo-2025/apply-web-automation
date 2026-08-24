@@ -19,7 +19,7 @@ const {
   waitForSubStatus,
   advancePastUnderwriting,
 } = require('./loanpro');
-const { resolveAccount } = require('./accounts');
+const { resolveAccount, markAccountUsed } = require('./accounts');
 const { seedAccount } = require('./seed-account');
 
 function loadData() {
@@ -323,7 +323,11 @@ async function run() {
     console.log('Seeding a fresh borrower...');
     await loginExistingAccount(page, data, await seedAccount(data));
   } else if (mode === 'login') {
-    await loginExistingAccount(page, data, resolveAccount(data));
+    const account = resolveAccount(data);
+    await loginExistingAccount(page, data, account);
+    // Only now is the application actually in play. A run that died before this
+    // point left it untouched and the account is still good.
+    markAccountUsed(account.email);
   } else {
     // Cloudflare challenges this path and Playwright cannot pass it — see
     // loginExistingAccount(). Kept for testing signup itself, from a browser

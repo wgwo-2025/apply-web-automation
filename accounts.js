@@ -27,10 +27,14 @@ function readPool() {
 }
 
 /**
- * Takes the next unused account and marks it used, so consecutive runs don't
- * collide on one application. Marking happens BEFORE the run rather than after:
- * a half-walked application is spent either way, so a crash must not hand the
- * same account to the next run.
+ * Returns the next unused account WITHOUT marking it. Marking is deferred to
+ * markAccountUsed(), called once login actually succeeds.
+ *
+ * An earlier version marked on claim, reasoning that a half-walked application
+ * is spent either way. That was too conservative: a run that dies BEFORE login
+ * — a bad selector, a Cloudflare stall — never touches the application, and
+ * marking it used threw away a perfectly good account. Three were burned that
+ * way while the login selectors were being fixed.
  */
 function claimAccount() {
   const pool = readPool();
@@ -38,12 +42,20 @@ function claimAccount() {
   if (!account) {
     throw new Error(
       `Every account in accounts.json is used (${(pool.accounts || []).length} total). ` +
-      'Seed more — see the README "Seeding accounts" section.'
+      'If runs failed before reaching the funnel, their applications are untouched — ' +
+      'set "used": false on those entries. Otherwise seed more (see the README).'
     );
   }
+  return account;
+}
+
+/** Marks an account spent. Called after login succeeds, not before. */
+function markAccountUsed(email) {
+  const pool = readPool();
+  const account = (pool.accounts || []).find((a) => a.email === email);
+  if (!account) return;
   account.used = true;
   fs.writeFileSync(POOL_PATH, `${JSON.stringify(pool, null, 2)}\n`);
-  return account;
 }
 
 /**
@@ -58,4 +70,4 @@ function resolveAccount(data) {
   return claimAccount();
 }
 
-module.exports = { resolveAccount, claimAccount, readPool, POOL_PATH };
+module.exports = { resolveAccount, claimAccount, markAccountUsed, readPool, POOL_PATH };
