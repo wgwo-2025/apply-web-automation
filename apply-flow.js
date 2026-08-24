@@ -12,6 +12,13 @@ const fs = require('fs');
 const path = require('path');
 const readline = require('readline');
 const { chromium } = require('playwright');
+const {
+  SUBSTATUS,
+  loanproClient,
+  applicationIdFromUrl,
+  waitForSubStatus,
+  advancePastUnderwriting,
+} = require('./loanpro');
 
 function loadData() {
   const arg = process.argv.find((a) => a.startsWith('--data='));
@@ -140,19 +147,33 @@ async function handleSmsOtp(page, data) {
 
 async function uploadDocuments(page, data) {
   await page.waitForURL(/\/verify\/check-list\//, { timeout: 20000 });
-  const docs = data.documentUpload;
-  if (!docs) {
-    console.log('No documentUpload paths configured in test-data.json — leaving the checklist unfilled.');
-    return;
+
+  // Document upload is a BRANCH, not a step. When identity and income verify
+  // cleanly, LoanPro requests no documents, apply-web's `noRequiredDocUpload`
+  // goes true and the checklist auto-passes with nothing to upload. Measured in
+  // orig-sandbox: 55 of 66 applications that reached Originated last month
+  // uploaded no documents at all. Detect the branch instead of assuming it.
+  const fileInputs = page.locator('input[type="file"]');
+  await page.waitForTimeout(3000); // let the checklist finish rendering
+  const inputCount = await fileInputs.count();
+  if (inputCount === 0) {
+    console.log('No documents requested — verification auto-passed. Skipping the upload step.');
+    return false;
   }
 
-  // The 3 file inputs are visually hidden (react-dropzone style), but
+  const docs = data.documentUpload;
+  if (!docs) {
+    console.log(`${inputCount} document(s) requested but no documentUpload paths configured — leaving the checklist unfilled.`);
+    return false;
+  }
+
+  // The file inputs are visually hidden (react-dropzone style), but
   // Playwright's setInputFiles works on hidden inputs directly — no need to
   // force them visible the way the manual chrome-devtools-mcp walkthrough did.
-  const fileInputs = page.locator('input[type="file"]');
-  await fileInputs.nth(0).setInputFiles(docs.ssnCardPath);
-  await fileInputs.nth(1).setInputFiles(docs.addressVerificationPath);
-  await fileInputs.nth(2).setInputFiles(docs.govIdPath);
+  const paths = [docs.ssnCardPath, docs.addressVerificationPath, docs.govIdPath];
+  for (let i = 0; i < Math.min(inputCount, paths.length); i += 1) {
+    await fileInputs.nth(i).setInputFiles(paths[i]);
+  }
 
   // apply-bff runs an automated image-quality check per document ("photo
   // isn't clear enough to read" for placeholder images) with a "Keep File"
@@ -167,6 +188,41 @@ async function uploadDocuments(page, data) {
   const doneButton = page.getByRole('button', { name: "I'm Done Uploading" });
   await waitForEnabled(doneButton, 30000);
   await doneButton.click();
+  return true;
+}
+
+/**
+ * An application whose documents were uploaded is stuck at Underwriting (64):
+ * placeholder images land as Ocrolus "Invalid document" (status 46), which
+ * Rule 259 treats as a permanent blocker. Clear the blockers in LoanPro so the
+ * run can carry on into the rest of the funnel.
+ *
+ * Only runs when documents were actually uploaded AND loanpro.enabled is set.
+ */
+async function advanceThroughUnderwriting(page, data) {
+  if (!data.loanpro?.enabled) {
+    console.log('loanpro.enabled is false — leaving the application in the underwriting queue.');
+    return;
+  }
+
+  const appId = applicationIdFromUrl(page.url());
+  if (!appId) {
+    console.log(`Could not read an application id from ${page.url()} — skipping the LoanPro step.`);
+    return;
+  }
+
+  console.log(`Application ${appId}: clearing underwriting blockers in LoanPro...`);
+  const api = await loanproClient();
+  try {
+    await waitForSubStatus(api, appId, SUBSTATUS.UNDERWRITING, 60000);
+    const { payloads } = await advancePastUnderwriting(api, appId);
+    console.log(`  applied ${payloads.length} update(s), waiting for Rule 259...`);
+    await waitForSubStatus(api, appId, SUBSTATUS.UNDERWRITING_COMPLETE, 45000);
+    console.log('  reached Underwriting Complete (132).');
+    await page.reload(); // apply-web re-reads loanSubStatus on load
+  } finally {
+    await api.dispose();
+  }
 }
 
 async function run() {
@@ -196,12 +252,16 @@ async function run() {
   await selectOffer(page, data);
   await verifyIdentity(page, data);
   await handleSmsOtp(page, data);
-  await uploadDocuments(page, data);
+  const uploaded = await uploadDocuments(page, data);
+
+  if (uploaded) {
+    await advanceThroughUnderwriting(page, data);
+  }
 
   console.log('Reached:', page.url());
-  console.log('Application now sits in backend "Document Review in Progress" — an async');
-  console.log('apply-bff queue with no further frontend-controllable step. Steps past this');
-  console.log('(final approval, bank linking, funding) are not yet mapped.');
+  console.log('Steps past Underwriting Complete (Stacker Check, Pre-Funding, TIL/esign,');
+  console.log('Originated) are not yet mapped. To find the next gate, run:');
+  console.log('  automation-rules-decoder.py --status <substatus> --database orig-sandbox');
 
   await browser.close();
 }
