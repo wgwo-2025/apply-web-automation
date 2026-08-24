@@ -36,9 +36,24 @@ function prompt(question) {
   }));
 }
 
+const escapeRegExp = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
 async function selectDropdown(page, buttonName, optionName) {
   await page.getByRole('button', { name: buttonName }).click();
-  await page.getByRole('option', { name: optionName, exact: true }).click();
+
+  // mfe-shared-components/SelectDropdown renders the open list as
+  // <li role="option"> inside <ul role="listbox">, AND a permanently-mounted
+  // hidden native <select> mirror (z-index: -1) whose <option> children carry
+  // the same role. getByRole('option') therefore matches two elements and
+  // strict mode refuses to pick one. Target the visible list item.
+  //
+  // Anchored regex rather than hasText's substring match, so "None" cannot also
+  // hit "None of the above"; escaped because option labels include values like
+  // "$5,000" where $ is a regex metacharacter.
+  await page.locator('li[role="option"]')
+    .filter({ hasText: new RegExp(`^\\s*${escapeRegExp(optionName)}\\s*$`) })
+    .first()
+    .click();
 }
 
 /**
