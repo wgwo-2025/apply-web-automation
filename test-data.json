@@ -3,7 +3,7 @@
     "baseUrl": "https://go-dev.happymoney.com"
   },
   "account": {
-    "email": "wgwo+applywebtest20260813@happymoney.com"
+    "mode": "login"
   },
   "loanDetails": {
     "desiredLoanAmount": 5000

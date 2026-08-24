@@ -38,6 +38,53 @@ manages LaunchDarkly for this repo to set the `PHONE_FOR_SMS_OTP_DEV_TESTING`
 flag in the dev environment to a number you control; when set, the app sends
 the OTP there regardless of what's on the application.
 
+### Account: log in, don't sign up
+
+`account.mode` picks how the run starts.
+
+| Mode | Behaviour |
+|---|---|
+| `login` (default in `test-data.json`) | Logs in as a pre-seeded borrower from `accounts.json` and resumes their empty application |
+| `create` | The original path — creates an account at `/create-account` |
+
+**Use `login`.** `/create-account` is the only path covered by the Cloudflare rule
+`WEB-ATTACK - Challenge Account Creation` (managed_challenge on go-dev, go-stage and
+go), and Playwright cannot pass it: it launches a fresh profile with no `cf_clearance`
+cookie and advertises automation via `navigator.webdriver`, so the challenge escalates
+to the interactive checkbox and loops until the navigation times out. Being on VPN does
+**not** exempt you — that rule is ordered ahead of the VPN allowlist. `/login` isn't
+matched by the rule and runs clean.
+
+You still need the VPN for everything else: a separate rule,
+`BLACKLIST - Block URL Suffixes`, blocks all of `*dev.happymoney.com` outright, and the
+VPN allowlist is the only reason go-dev is reachable at all.
+
+### Seeding accounts
+
+Each seeded account is a Cognito-**confirmed** borrower linked to an empty LoanPro
+application at sub-status 60 (Started), so login lands on `/apply/loan-details` — the
+same place account creation would have. **Accounts are single-use:** once a run walks
+the funnel, that application has moved past Started. `accounts.js` claims the next
+unused entry and marks it used before the run starts.
+
+Copy `accounts.example.json` to `accounts.json` (gitignored) and fill it in. To seed
+more, from the `happy-money-assistant` repo:
+
+```sh
+python3.11 tools/test-user-manager.py create --scope orig --native --tag <unique> --env dev --execute
+```
+
+It prints the email, password and application id to paste into `accounts.json`.
+
+🔴 **Emails are single-use and the flow is one-shot.** `/no-auth/auth/signup` creates
+an *unconfirmed* Cognito user, and the only thing that confirms it is
+`PATCH /no-auth/borrowers/update-borrower-subscriber-id`, which needs an LOS
+application and can only ever be called once per borrower. If a Cognito user already
+exists for the email when the LoanPro customer is created, the `loanpro-cognito-sync`
+Lambda claims the link first, the confirm call is refused, and the account is stranded
+unconfirmed permanently — with no recovery through the public surface. Always use a
+fresh `+tag`, and don't hand-roll this sequence; use the tool.
+
 ### Document upload is a branch, not a step
 
 **A clean applicant never sees the document-upload screen.** LoanPro only
@@ -91,7 +138,7 @@ above — not a product behavior, and off by default.
 | Key | Notes |
 |---|---|
 | `environment.baseUrl` | go-dev by default |
-| `account.email` | New account email; must be unique per run |
+| `account.mode` | `login` (default) uses a seeded account from `accounts.json`; `create` signs up at `/create-account` — see "Account: log in, don't sign up" |
 | `loanDetails.desiredLoanAmount` | Initial ask, $5,000–$50,000 |
 | `aboutYou.*` | Name / DOB / citizenship status |
 | `contactDetails.*` | Address + phone (see OTP note above) |

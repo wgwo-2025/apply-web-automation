@@ -19,6 +19,7 @@ const {
   waitForSubStatus,
   advancePastUnderwriting,
 } = require('./loanpro');
+const { resolveAccount } = require('./accounts');
 
 function loadData() {
   const arg = process.argv.find((a) => a.startsWith('--data='));
@@ -37,6 +38,33 @@ function prompt(question) {
 async function selectDropdown(page, buttonName, optionName) {
   await page.getByRole('button', { name: buttonName }).click();
   await page.getByRole('option', { name: optionName, exact: true }).click();
+}
+
+/**
+ * Logs in as a pre-seeded borrower instead of creating an account.
+ *
+ * /create-account is the ONLY path covered by the Cloudflare rule
+ * "WEB-ATTACK - Challenge Account Creation" (managed_challenge on go-dev,
+ * go-stage and go). Playwright cannot pass that challenge: it launches a fresh
+ * profile with no cf_clearance cookie and advertises automation via
+ * navigator.webdriver, so the challenge escalates to the interactive checkbox
+ * and loops until the navigation times out. Being on VPN does not exempt it —
+ * the challenge rule is ordered ahead of the VPN allowlist.
+ *
+ * /login is not matched by that rule, so this path runs clean.
+ */
+async function loginExistingAccount(page, data, account) {
+  await page.goto(`${data.environment.baseUrl}/login`);
+  await page.getByRole('textbox', { name: 'Email Address' }).fill(account.email);
+  // The password field is type="password", which has no implicit textbox role.
+  await page.locator('#password').fill(account.password);
+  await page.getByRole('button', { name: 'Log In' }).click();
+
+  // A seeded application sits at sub-status 60 (Started), so apply-web routes
+  // through /apply/route/borrower and lands on loan-details — the same place
+  // account creation would have left us.
+  await page.waitForURL(/\/apply\/loan-details\//, { timeout: 30000 });
+  console.log(`Logged in as ${account.email} — resumed application ${applicationIdFromUrl(page.url())}`);
 }
 
 async function fillLoanDetails(page, data) {
@@ -230,11 +258,18 @@ async function run() {
   const browser = await chromium.launch({ headless: false });
   const page = await browser.newPage();
 
-  await page.goto(`${data.environment.baseUrl}/create-account`);
-  await page.getByRole('textbox', { name: 'Email Address' }).fill(data.account.email);
-  await page.getByRole('button', { name: 'Continue' }).click();
+  if ((data.account?.mode || 'create') === 'login') {
+    await loginExistingAccount(page, data, resolveAccount(data));
+  } else {
+    // Cloudflare challenges this path and Playwright cannot pass it — see
+    // loginExistingAccount(). Kept for testing signup itself, from a browser
+    // profile that already holds a cf_clearance cookie.
+    await page.goto(`${data.environment.baseUrl}/create-account`);
+    await page.getByRole('textbox', { name: 'Email Address' }).fill(data.account.email);
+    await page.getByRole('button', { name: 'Continue' }).click();
+    await page.waitForURL(/\/apply\/loan-details\//, { timeout: 20000 });
+  }
 
-  await page.waitForURL(/\/apply\/loan-details\//, { timeout: 20000 });
   await fillLoanDetails(page, data);
 
   await page.waitForURL(/\/apply\/about-you\//, { timeout: 20000 });

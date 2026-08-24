@@ -3,3 +3,5 @@ test-docs/
 .yarn/
 .env
 
+accounts.json
+.pw-profile/
