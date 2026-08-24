@@ -357,7 +357,19 @@ async function waitForEnabled(locator, timeout = 20000) {
 }
 
 async function handleSmsOtp(page, data) {
-  await page.waitForURL(/\/verify\/sms-otp-verification\//, { timeout: 20000 });
+  // The SSN page polls the same way the offers page does (SsnPage.js uses
+  // usePollingApplicationById), so the hop off it is bounded by that 120s
+  // budget, not by a page load. And the OTP step is itself conditional
+  // (ENABLE_SMS_OTP_VERIFICATION) — when it is off the funnel goes straight to
+  // the checklist, so accept either destination rather than only the OTP one.
+  await page.waitForURL(
+    (u) => /\/verify\/(sms-otp-verification|check-list)\//.test(String(u)),
+    { timeout: OFFERS_POLL_TIMEOUT_MS },
+  );
+  if (/\/verify\/check-list\//.test(page.url())) {
+    console.log('  SMS OTP step was skipped — already at the checklist.');
+    return;
+  }
   await page.getByRole('button', { name: 'Send Code' }).click();
 
   if (data.otp?.mode === 'skip') {
