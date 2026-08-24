@@ -237,6 +237,24 @@ async function confirmApplicationSummary(page) {
   await page.waitForURL(/\/offer\/offers\//, { timeout: 20000 });
 }
 
+/** Dumps what is actually on the offers page, so a miss is diagnosable in one round. */
+async function reportOffersPageState(page) {
+  const shot = `offers-failure-${Date.now()}.png`;
+  await page.screenshot({ path: shot, fullPage: true }).catch(() => {});
+  const texts = async (sel, cap) => {
+    const all = await page.locator(sel).allTextContents().catch(() => []);
+    return all.map((t) => t.replace(/\s+/g, ' ').trim()).filter(Boolean).slice(0, cap);
+  };
+  console.log('--- offers page state ---');
+  console.log(`  url        : ${page.url()}`);
+  console.log(`  headings   : ${JSON.stringify(await texts('h1, h2, h3', 8))}`);
+  console.log(`  buttons    : ${JSON.stringify(await texts('button', 12))}`);
+  console.log(`  radios     : ${await page.getByRole('radio').count()}`);
+  console.log(`  listboxes  : ${await page.locator('[aria-haspopup="listbox"]').count()}`);
+  console.log(`  screenshot : ${shot}`);
+  console.log('-------------------------');
+}
+
 async function selectOffer(page, data) {
   const cfg = data.offerSelection;
 
@@ -277,10 +295,30 @@ async function selectOffer(page, data) {
     console.log('  Autopay discount toggle is not rendered — skipping.');
   }
 
-  // Each OfferCardNew carries a real radio, so this still holds on both pages.
-  // Wait for the list: offers render after the decision resolves, not on load.
+  // OfferCardNew carries a real radio; the retired original OfferCard does not,
+  // so radios are also the signal that offers actually rendered.
+  //
+  // The offers list is populated asynchronously after underwriting-srv finishes
+  // generating offers, which can land AFTER this page first paints. If nothing
+  // has rendered, reload once before giving up: a page that painted too early
+  // will not necessarily poll itself into the right state.
   const offerRadios = page.getByRole('radio');
-  await offerRadios.first().waitFor({ timeout: 30000 });
+  try {
+    await offerRadios.first().waitFor({ timeout: 45000 });
+  } catch {
+    console.log('  No offers rendered yet — reloading once.');
+    await page.reload();
+    try {
+      await offerRadios.first().waitFor({ timeout: 45000 });
+    } catch {
+      await reportOffersPageState(page);
+      throw new Error(
+        'Offers never rendered. See the dump above and the screenshot — if LoanPro ' +
+        'has offers for this application but the page shows none, the mismatch is ' +
+        'in the apply-bff fetch, not in these selectors.'
+      );
+    }
+  }
   const count = await offerRadios.count();
   const index = cfg.offerIndex ?? 0;
   if (index >= count) {

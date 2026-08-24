@@ -6,3 +6,4 @@ test-docs/
 accounts.json
 .pw-profile/
 login-failure-*.png
+offers-failure-*.png
