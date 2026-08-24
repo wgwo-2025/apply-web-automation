@@ -93,6 +93,38 @@ Lambda claims the link first, the confirm call is refused, and the account is st
 unconfirmed permanently — with no recovery through the public surface. Always use a
 fresh `+tag`, and don't hand-roll this sequence; use the tool.
 
+### Feature flags
+
+Nearly every surface this script drives is flag-gated, so a flag flipping
+underneath a run looks exactly like a broken selector. Each run prints the
+values LaunchDarkly actually evaluated, read off the wire (no LD token needed):
+
+```
+Feature flags (N evaluated): OFFER_PAGE_VERSION="new"  ENABLE_AUTO_PAY_DISCOUNT=true  ...
+```
+
+**Check that line first when a selector breaks.** Values in `apply-web-internal`
+/ dev as of 2026-08-24:
+
+| Flag | dev | What it changes |
+|---|---|---|
+| `OFFER_PAGE_VERSION` | `"new"` @ 100% | AmountSlider offers page. Permanent direction; the original page is not handled |
+| `ENABLE_AUTO_PAY_DISCOUNT` | ON | Renders the autopay toggle on offers |
+| `ENABLE_SMS_OTP` | ON | Login OTP step labels its field "Email or US mobile number" |
+| `ENABLE_SMS_OTP_VERIFICATION` | ON | The in-funnel SMS OTP step that `otp.mode` handles |
+| `ENABLE_MAGIC_LINK` | OFF | ON changes the OTP button to "Continue without password" |
+| `ENABLE_APPLICATION_SELECTION` | ON | A borrower with >1 application is routed to `/apply/application-selection` — another reason accounts are single-use |
+| `DYNAMIC_VERIFICATION` | ON | Doc-upload checklist layout and required-action panel |
+
+Also live: `ENABLE_REFI_FLOW` ON, `SKIP_DIRECT_CARD_PAYOFF` ON,
+`ENABLE_CREDIBLE_AS_TURNDOWN_PARTNER` ON, `ENABLE_TRUSTAGE` OFF,
+`SKIP_CHECKING_DEVICE_DETECTION` OFF, `PLAID_SKIP_ALLOWED_CHECK` OFF,
+`SHOW_NOTIFICATION_BANNER` OFF.
+
+Note `PHONE_FOR_SMS_OTP_DEV_TESTING` is OFF and its fallthrough is a `+84…`
+number, so turning it on without setting your own would send codes somewhere you
+cannot read them.
+
 ### Document upload is a branch, not a step
 
 **A clean applicant never sees the document-upload screen.** LoanPro only

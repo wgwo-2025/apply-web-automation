@@ -21,6 +21,7 @@ const {
 } = require('./loanpro');
 const { resolveAccount, markAccountUsed } = require('./accounts');
 const { seedAccount } = require('./seed-account');
+const { watchFeatureFlags, reportFeatureFlags } = require('./feature-flags');
 
 function loadData() {
   const arg = process.argv.find((a) => a.startsWith('--data='));
@@ -174,10 +175,11 @@ async function confirmApplicationSummary(page) {
 async function selectOffer(page, data) {
   const cfg = data.offerSelection;
 
-  // There are TWO offers pages behind the LaunchDarkly flag OFFER_PAGE_VERSION
-  // (offers-mfe/src/pages/Offers/index.js). dev and stage are both 100% rolled
-  // out to "new", which replaces the original "$5,000" dropdown button with an
-  // AmountSlider. Its desktop control is still a SelectDropdown, but the trigger
+  // The offers page is the "new" (AmountSlider) implementation. It sits behind
+  // the LaunchDarkly flag OFFER_PAGE_VERSION (offers-mfe/src/pages/Offers/
+  // index.js); dev and stage are both 100% rolled out to "new" and that is the
+  // permanent direction, so the original page is not handled here. It replaced
+  // the original "$5,000" dropdown button with an AmountSlider. Its desktop control is still a SelectDropdown, but the trigger
   // is a role="button" DIV whose accessible name is not reliably a bare currency
   // string — which is why matching on /^\$[\d,]+$/ timed out. Find it
   // structurally by aria-haspopup, and treat it as optional: the slider defaults
@@ -352,6 +354,9 @@ async function run() {
   const browser = await chromium.launch({ headless: false });
   const page = await browser.newPage();
 
+  // Attach before the first navigation — the LD client evaluates on init.
+  const flags = watchFeatureFlags(page);
+
   const mode = data.account?.mode || 'auto';
   if (mode === 'auto') {
     console.log('Seeding a fresh borrower...');
@@ -371,6 +376,8 @@ async function run() {
     await page.getByRole('button', { name: 'Continue' }).click();
     await page.waitForURL(/\/apply\/loan-details\//, { timeout: 20000 });
   }
+
+  reportFeatureFlags(flags);
 
   await fillLoanDetails(page, data);
 
