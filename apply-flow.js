@@ -57,13 +57,29 @@ async function selectDropdown(page, buttonName, optionName) {
 async function loginExistingAccount(page, data, account) {
   await page.goto(`${data.environment.baseUrl}/login`);
 
+  // /login opens on the PASSWORDLESS step (OTPLogin/LoginPage.js defaults to
+  // useState(STEPS.OTP)), which offers an email/mobile field and a one-time
+  // code. The email+password form is a STEP CHANGE on the same URL, not a
+  // separate route, reached by the "Login with Password" button. The URL never
+  // changes, which is why this looked like the page simply wasn't advancing.
+  //
+  // Conditional rather than unconditional: whether the OTP step renders at all
+  // depends on feature flags, and with them off /login shows the password form
+  // directly and this button never exists.
+  const switchToPassword = page.getByRole('button', { name: /log\s*in with password/i });
+  if (await switchToPassword.count()) {
+    await switchToPassword.first().click();
+  }
+
   // Both fields render through mfe-shared-components/FormInput -> matter's
   // Input. The email field resolves by accessible name, same as every other
   // field this script drives. The password field does NOT: input[type=password]
   // has no implicit ARIA role, so getByRole('textbox') never matches it, and
   // whether FormInput's `id` reaches the DOM depends on matter internals. Match
   // on the type attribute instead — that is true regardless.
-  await page.getByRole('textbox', { name: 'Email Address' }).fill(account.email);
+  const emailField = page.getByRole('textbox', { name: 'Email Address' });
+  await emailField.waitFor({ timeout: 20000 });
+  await emailField.fill(account.email);
   await page.locator('input[type="password"]').fill(account.password);
 
   // The submit button is disabled until react-hook-form marks the form valid,
@@ -88,8 +104,9 @@ async function loginExistingAccount(page, data, account) {
       `  page alert: ${alertText ? alertText.trim() : '(none)'}\n` +
       `  screenshot: ${shot}\n` +
       `  If the alert mentions matching records, the credentials are wrong. If the URL\n` +
-      `  is still /login with no alert, the form never submitted. If it is some other\n` +
-      `  /apply route, the seeded application is not at sub-status 60.`
+      `  is still /login with no alert, the form never submitted — check whether the\n` +
+      `  "Login with Password" step switch actually rendered the email+password form.\n` +
+      `  If it is some other /apply route, the seeded application is not at sub-status 60.`
     );
   }
   console.log(`Logged in as ${account.email} — resumed application ${applicationIdFromUrl(page.url())}`);
