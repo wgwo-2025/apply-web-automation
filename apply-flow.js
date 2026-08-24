@@ -109,7 +109,7 @@ async function loginExistingAccount(page, data, account) {
   // Requested Loan Amount (cf131) resumes at about-you instead. Accept any apply
   // step and let walkApplySteps() continue from wherever we land.
   try {
-    await page.waitForURL(/\/apply\//, { timeout: 30000 });
+    await settleOnApplyStep(page);
   } catch (err) {
     // Say what actually happened rather than just timing out on a regex.
     const shot = `login-failure-${Date.now()}.png`;
@@ -143,6 +143,24 @@ const APPLY_STEPS = [
   { name: 'application-summary', re: /\/apply\/application-summary\//, run: (p) => confirmApplicationSummary(p) },
 ];
 
+// /apply/route/borrower and /apply/route/application/:id are TRANSIENT
+// redirectors, not steps. Matching them as "we have arrived" reads the URL
+// before the router has settled: the application id is not in it yet, and no
+// step matches, so the walker would exit having done nothing.
+const APPLY_ROUTING_RE = /\/apply\/route\//;
+
+/** Resolves once the router has settled on a real destination. */
+async function settleOnApplyStep(page, timeout = 45000) {
+  await page.waitForURL((u) => {
+    const url = String(u);
+    if (APPLY_ROUTING_RE.test(url)) return false;
+    return APPLY_STEPS.some((x) => x.re.test(url))
+      || /\/apply\/application-selection/.test(url)
+      || /\/offer\//.test(url)
+      || /\/verify\//.test(url);
+  }, { timeout });
+}
+
 function stepNameFromUrl(url) {
   const step = APPLY_STEPS.find((x) => x.re.test(String(url)));
   if (step) return step.name;
@@ -152,7 +170,10 @@ function stepNameFromUrl(url) {
 
 async function walkApplySteps(page, data) {
   // + 2 so a legitimate re-render of the same step cannot spin forever.
-  for (let guard = 0; guard < APPLY_STEPS.length + 2; guard += 1) {
+  for (let guard = 0; guard < APPLY_STEPS.length + 3; guard += 1) {
+    if (APPLY_ROUTING_RE.test(page.url())) {
+      await settleOnApplyStep(page);
+    }
     const url = page.url();
     const step = APPLY_STEPS.find((x) => x.re.test(url));
     if (!step) {

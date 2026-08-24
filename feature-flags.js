@@ -29,20 +29,34 @@ const FLAGS_OF_INTEREST = [
  */
 function watchFeatureFlags(page) {
   const flags = {};
+  // Every LaunchDarkly URL seen, so "none captured" can say WHICH endpoint was
+  // used rather than leaving you guessing whether LD ran at all.
+  const endpoints = new Set();
+  Object.defineProperty(flags, '__endpoints', { value: endpoints, enumerable: false });
 
   page.on('response', async (res) => {
-    if (!/launchdarkly\.com\/sdk\/eval/.test(res.url())) return;
+    const url = res.url();
+    if (!/launchdarkly\.com/.test(url)) return;
+    endpoints.add(url.split('?')[0]);
+
+    // The JS client evaluates over /sdk/evalx/... (polling) or /eval/...
+    // (streaming). Don't hardcode either — just try to parse anything from the
+    // LD hosts and keep whatever looks like a flag map.
     let body;
     try {
       body = await res.json();
     } catch {
-      return; // streaming pings and non-JSON payloads
+      return; // SSE streams and event-ingest posts are not JSON flag maps
     }
-    if (!body || typeof body !== 'object') return;
+    if (!body || typeof body !== 'object' || Array.isArray(body)) return;
     for (const [key, entry] of Object.entries(body)) {
       // evalx returns { value, version, ... } per flag; older shapes return the
-      // bare value. Accept both.
-      flags[key] = entry && typeof entry === 'object' && 'value' in entry ? entry.value : entry;
+      // bare value. Accept both, and ignore anything that is neither.
+      if (entry && typeof entry === 'object') {
+        if ('value' in entry) flags[key] = entry.value;
+      } else {
+        flags[key] = entry;
+      }
     }
   });
 
@@ -52,7 +66,13 @@ function watchFeatureFlags(page) {
 function reportFeatureFlags(flags) {
   const captured = Object.keys(flags).length;
   if (!captured) {
-    console.log('Feature flags: none captured (LaunchDarkly response not seen — flag-dependent UI is unverified this run).');
+    const seen = [...(flags.__endpoints || [])];
+    console.log(
+      'Feature flags: none captured — flag-dependent UI is unverified this run.' +
+      (seen.length
+        ? `\n  LaunchDarkly endpoints seen (none returned a parseable flag map):\n    ${seen.join('\n    ')}`
+        : '\n  No LaunchDarkly request observed at all. Flags may be served from a proxy or bootstrapped server-side.')
+    );
     return;
   }
   const shown = FLAGS_OF_INTEREST
