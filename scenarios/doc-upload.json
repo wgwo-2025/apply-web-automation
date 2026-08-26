@@ -1,12 +1,10 @@
 {
+  "_comment": "Document-upload BRANCH scenario. The zipCode here (66206) deliberately does NOT match the bureau record for this persona, so Identity Address Match (cf600) and Identity SSN Match (cf602) fail, LoanPro requests identity documents, and apply-web renders the upload checklist. The happy path in test-data.json uses 66209 and never sees this screen. loanpro.enabled is true because placeholder images land as Ocrolus 'Invalid document' and permanently block Rule 259 — without the backend nudge this scenario dead-ends at Underwriting.",
   "environment": {
     "baseUrl": "https://go-dev.happymoney.com"
   },
   "account": {
-    "mode": "auto",
-    "emailPrefix": "qa+awa",
-    "emailDomain": "happymoney.com",
-    "env": "dev"
+    "email": "CHANGE-ME-PER-RUN@happymoney.com"
   },
   "loanDetails": {
     "desiredLoanAmount": 5000
@@ -23,7 +21,7 @@
     "aptSuiteOther": "",
     "city": "LEAWOOD",
     "state": "Kansas",
-    "zipCode": "66209",
+    "zipCode": "66206",
     "phoneNumber": "3127381938"
   },
   "financialDetails": {
@@ -51,6 +49,6 @@
     "govIdPath": "./test-docs/gov-id.png"
   },
   "loanpro": {
-    "enabled": false
+    "enabled": true
   }
 }
