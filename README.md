@@ -199,12 +199,31 @@ bypass on and the mocked fraud result does not survive. Emails are single-use --
 a repeated address is rejected at Cognito signup and the new application ends up
 orphaned from the login.
 
-**This is not a guaranteed document bypass.** Measured over applications created
-since 2026-06-01: 0 of 270 `fraud_pass` applications carry sub-portfolio 141, so
-that path is reliably off -- but 54 of 199 (27%) still ended up with Government
-Issued ID required through a different writer, which has not been isolated. Two
-other writers exist: `buildGovernmentIdChecklist` (bureau name or DOB match
-fails) and `FraudCheckUnderwritingHandler` (`Fraud Detection ID` blank).
+**Measured over applications created since 2026-06-01:** 0 of 270 `fraud_pass`
+applications carry sub-portfolio 141, so that path is reliably off.
+
+54 of 199 do still show Government Issued ID at status Required -- but read that
+row before believing it, because **it is usually written after the funnel has
+already passed the checklist.** On application 69951, LoanPro rule 280
+("Document Automation - Government Issued ID (Fraud)") wrote it at 21:48:50; the
+application had reached Approved at 21:48:49, one second earlier. Of those 54,
+nine reached **Originated** and three more Allocated, which is only possible if
+the requirement landed after the gate it appears to control.
+
+The page never reads that field anyway:
+
+```js
+const noRequiredDocUpload = documentVerifications?.length === 0
+```
+
+`documentVerifications` comes from `applicationById.documents`, not from the
+checklist item's `status_catalog_id`. So a "Required" row in LoanPro and a
+checklist that auto-passed are not in conflict; they are different signals.
+
+Two other writers can require the ID genuinely, before the checklist:
+`buildGovernmentIdChecklist` (bureau name or DOB match fails) and
+`FraudCheckUnderwritingHandler` (`Fraud Detection ID` blank). Neither is steered
+by the email.
 
 ### Getting past underwriting (`loanpro.enabled`)
 
@@ -292,11 +311,23 @@ documents. From offer selection to Approved took 65 seconds, unattended:
 ```
 
 So Stacker Check needs no help from the script, and Underwriting Complete is no
-longer the ceiling. What is genuinely unmapped is the **browser** side past the
-checklist: the approved page (`/fund/approved/:applicationId`, `FUND_ROUTE_PATHS`
-in `fund-mfe-ui/src/route-paths.js`), then autopay, TIL/esign, funding account
-and funded. Extend `apply-flow.js` to navigate on from the checklist rather than
-closing there.
+longer the ceiling.
+
+`reachApprovedPage()` now drives the browser the rest of the way and asserts it
+arrived. The checklist does not navigate there on its own -- it reloads the
+application every 30s and swaps in a loader, but nothing pushes a route, because
+`getTerminalRoute` only returns the declined and adverse-action routes. So the
+step re-runs the router at `/apply/route/application/<id>`, whose `getFundRoute`
+returns the approved route while the partner is unconfirmed, and polls until the
+application actually gets there.
+
+Arrival is asserted on the rendered page, not just the URL: a heading matching
+`/Congratulations.*Approved/` or, failing that, `Finalize & Sign`. Matching by
+role rather than by string is deliberate -- the heading is split across a `<br>`
+in `Approved.js`, so a literal comparison fails while the accessible name
+concatenates it back together.
+
+Still unmapped past that point: autopay, TIL/esign, funding account and funded.
 
 Each of those is gated by another LoanPro automation rule. To find the next
 gate, from the `happy-money-assistant` repo:

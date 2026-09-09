@@ -256,6 +256,13 @@ async function confirmApplicationSummary(page) {
 // reached yet. Reloading is worse than waiting: polling state lives in a module
 // -level object whose `attempts` resets to 1 on mount, so a reload throws away
 // the progress made so far and starts the 120s again.
+// Approval is asynchronous. Measured on 69951: Offer Selected -> Approved (95)
+// in 65s, Stacker Check included. Budget well past that so a slow decision reads
+// as slow rather than as a failure.
+const APPROVAL_TIMEOUT_MS = 240000;
+const APPROVAL_POLL_MS = 10000;
+const APPROVED_RE = /\/fund\/approved\//;
+
 const OFFERS_POLL_BUDGET_MS = 24 * 5 * 1000;
 const OFFERS_POLL_TIMEOUT_MS = OFFERS_POLL_BUDGET_MS + 30000; // + margin for render
 
@@ -482,6 +489,80 @@ async function advanceThroughUnderwriting(page, data) {
   }
 }
 
+/**
+ * Drives the browser from the verification checklist to the approved page and
+ * proves it arrived.
+ *
+ * The checklist does NOT navigate here by itself. It reloads the application on
+ * a 30s interval (VerificationCheckListPage's useInterval) and swaps in a loader,
+ * but nothing pushes a new route -- getTerminalRoute only returns the declined
+ * and adverse-action routes, never approved. So we drive it: /apply/route/
+ * application/<id> re-runs RouteApplication, whose getFundRoute returns the
+ * APPROVED route while the partner is unconfirmed, which a freshly approved
+ * application always is.
+ *
+ * Approval is asynchronous and takes real time. Measured on 69951: Offer
+ * Selected -> Approved (95) took 65 SECONDS, Stacker Check included. So we poll
+ * the router rather than expecting it on the first hop.
+ */
+async function reachApprovedPage(page, data, appId) {
+  const deadline = Date.now() + APPROVAL_TIMEOUT_MS;
+  let lastUrl = page.url();
+
+  while (Date.now() < deadline) {
+    await page.goto(`${data.environment.baseUrl}/apply/route/application/${appId}`);
+    await settleOnApplyStep(page, 45000).catch(() => {});
+    lastUrl = page.url();
+
+    if (APPROVED_RE.test(lastUrl)) {
+      await assertOnApprovedPage(page, appId);
+      return;
+    }
+
+    // Terminal states the router resolves to instead. No amount of waiting helps.
+    if (/\/offer\/(declined|adverse-action)/.test(lastUrl)) {
+      throw new Error(`Application ${appId} was declined — router landed on ${lastUrl}`);
+    }
+
+    await page.waitForTimeout(APPROVAL_POLL_MS);
+  }
+
+  throw new Error(
+    `Application ${appId} did not reach the approved page within ` +
+    `${APPROVAL_TIMEOUT_MS / 1000}s. Last route: ${lastUrl}\n` +
+    '  The application may still be in underwriting rather than approved. Check with:\n' +
+    `  transaction-log.py ${appId} --database orig-sandbox --format timeline`
+  );
+}
+
+/**
+ * Confirms we are really on the approved page rather than a URL that merely
+ * looks right — a blank render or an error boundary would still match the path.
+ *
+ * The heading is split across a <br> in the source ("Congratulations, You're"
+ * + " Approved!"), so a literal string match fails. getByRole computes the
+ * accessible name from the concatenated text content, which restores it; the
+ * regex also sidesteps the apostrophe being an entity in the DOM.
+ */
+async function assertOnApprovedPage(page, appId) {
+  const heading = page.getByRole('heading', { name: /Congratulations.*Approved/i });
+  const fallback = page.getByRole('heading', { name: /Finalize\s*&\s*Sign/i });
+
+  await Promise.race([
+    heading.waitFor({ timeout: 30000 }),
+    fallback.waitFor({ timeout: 30000 }),
+  ]).catch(async () => {
+    const headings = await page.getByRole('heading').allTextContents();
+    throw new Error(
+      `URL is the approved page for ${appId} but neither the approval heading nor ` +
+      `"Finalize & Sign" rendered.\n  headings: ${JSON.stringify(headings)}`
+    );
+  });
+
+  console.log(`  APPROVED — ${page.url()}`);
+  console.log(`  heading: ${(await heading.textContent().catch(() => null)) || 'Finalize & Sign'}`);
+}
+
 async function run() {
   const data = loadData();
   const browser = await chromium.launch({ headless: false });
@@ -541,15 +622,11 @@ async function run() {
     await advanceThroughUnderwriting(page, data);
   }
 
-  // The browser stops here; the APPLICATION does not. Measured on 69951: a run
-  // that requested no documents went Offer Selected -> Approved (95) in 65s on
-  // its own, Stacker Check included. So this line reports where the automation
-  // gave up, not how far the application got -- check the sub-status in LoanPro.
+  const appId = applicationIdFromUrl(page.url());
+  await reachApprovedPage(page, data, appId);
+
   console.log('Browser stopped at:', page.url());
-  console.log('The application keeps advancing on its own from here. Pages past the');
-  console.log('checklist -- approved, autopay, TIL/esign, funded -- are not yet driven.');
-  console.log('Check where the application actually landed:');
-  console.log('  transaction-log.py <appId> --database orig-sandbox --format timeline');
+  console.log('Pages past approved — autopay, TIL/esign, funded — are not yet driven.');
 
   await browser.close();
 }
