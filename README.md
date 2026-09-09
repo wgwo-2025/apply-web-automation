@@ -248,6 +248,37 @@ the raw Clojure it prints rather than trusting the summary table.
 > The override is the LoanPro API, not a frontend flag, which is why searching
 > apply-web / member-react / point-break turned up nothing.
 
+## `ssnLast4` tracks the sandbox bureau, and it goes stale
+
+The verify step's field is last-four only (`SharedSsn.js`, `maxLength: 4`,
+"Last 4 Digits of Social Security Number (SSN)"). The borrower confirms four
+digits against the SSN the credit bureau already returned -- they do not supply
+the SSN. `FraudService.isLastFourSsnMatched` compares
+`Last 4 of SSN (cf283)` against the last four of `Bureau SSN (cf174)`, and a
+mismatch is enough on its own to flip the application off the bureau-passed
+path and mark Social Security Card required, even when name, DOB, suffix and
+address all pass.
+
+**The value is not a property of the persona -- it is a property of the sandbox
+bureau mock, and that mock changes.** For ZENAIDA ACHURRA it returned
+`666646481` through Jan 2026, crossed over during Feb-Mar 2026, and has
+returned `223344556` (last four **4556**) ever since. `666646481` is still
+hardcoded as this persona's canonical SSN in happy-money-assistant's
+`data_factory_models.py`; that value predates the cutover.
+
+Re-derive it rather than trusting this file, from `happy-money-assistant`:
+
+```sh
+python3.11 tools/execute-analytics-query.py --database orig-sandbox --format table \
+  "SELECT cf.custom_field_value FROM loan_settings_entity lse
+   JOIN custom_field__entity cf ON lse.id=cf.entity_id AND cf.entity_type='Entity.LoanSettings'
+   WHERE lse.loan_id=<a recently decisioned app> AND cf.custom_field_id=174"
+```
+
+The durable fix is to read cf174 over the LoanPro API mid-run and type its last
+four, which survives the next cutover. That needs `LOANPRO_TOKEN`; the
+hardcoded value does not.
+
 ## A note on the test persona
 
 `test-data.json` carries a name, DOB, full street address, phone number and SSN
