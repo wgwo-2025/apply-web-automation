@@ -194,6 +194,31 @@ above — not a product behavior, and off by default.
 Copy `test-data.json` to a new file per scenario (e.g. `scenarios/high-income.json`)
 and pass it with `--data=`.
 
+## Selectors track a deployed build, not a branch
+
+go-dev serves whatever was last dispatched to it, which is not `main` and not
+your local checkout. Deploys go out by manual `workflow_dispatch` only:
+
+```sh
+gh run list --repo HappyMoneyInc/apply-web --workflow pipeline.yml --limit 5
+```
+
+That skew is a real failure mode, not a hypothetical. The script sat untouched
+from 2026-08-24 to 2026-09-09 while go-dev moved from `main` (Aug 26) to
+`releases/release-092026`, and the first run after that broke on About You's
+citizenship dropdown -- a selector that was correct when written.
+
+### Two dropdown implementations are live at once
+
+ORIG-3005 migrated About You and Contact Details to `FormDropdown`, built on
+ui-library's `Dropdown`. That wraps Radix's dropdown-**menu** primitive, so its
+options are `role="menuitem"`. Financial Details was out of that ticket's scope
+and still renders `FormSelect` -> `SelectDropdown`, whose options are
+`<li role="option">`.
+
+`selectDropdown()` matches both. When the remaining pages migrate, the
+`li[role="option"]` half becomes dead and can go -- but not before.
+
 ## Known gap
 
 The script reaches Underwriting Complete (sub-status 132). Steps beyond that —

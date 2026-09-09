@@ -42,16 +42,26 @@ const escapeRegExp = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 async function selectDropdown(page, buttonName, optionName) {
   await page.getByRole('button', { name: buttonName }).click();
 
-  // mfe-shared-components/SelectDropdown renders the open list as
-  // <li role="option"> inside <ul role="listbox">, AND a permanently-mounted
-  // hidden native <select> mirror (z-index: -1) whose <option> children carry
-  // the same role. getByRole('option') therefore matches two elements and
-  // strict mode refuses to pick one. Target the visible list item.
+  // TWO dropdown implementations are live in the funnel at once, so this has to
+  // match either. ORIG-3005 migrated About You and Contact Details to
+  // FormDropdown, built on ui-library's `Dropdown` -- which wraps Radix's
+  // dropdown-MENU primitive, so its options are role="menuitem". Financial
+  // Details was out of that ticket's scope and still renders FormSelect ->
+  // SelectDropdown, whose options are <li role="option"> in a <ul role=
+  // "listbox">. Matching only the latter is what broke About You's citizenship
+  // field once release-092026 reached go-dev.
+  //
+  // Attribute selectors, not getByRole: SelectDropdown also mounts a hidden
+  // native <select> mirror whose <option> children resolve to the same ARIA
+  // role, and getByRole('option') matches both, so strict mode refuses to pick
+  // one. A native <option> carries no literal role attribute, so [role=
+  // "option"] sees only the list item. FormDropdown's autofill proxy <select>
+  // is aria-hidden for the same reason and is likewise invisible here.
   //
   // Anchored regex rather than hasText's substring match, so "None" cannot also
   // hit "None of the above"; escaped because option labels include values like
   // "$5,000" where $ is a regex metacharacter.
-  await page.locator('li[role="option"]')
+  await page.locator('[role="menuitem"], li[role="option"]')
     .filter({ hasText: new RegExp(`^\\s*${escapeRegExp(optionName)}\\s*$`) })
     .first()
     .click();
