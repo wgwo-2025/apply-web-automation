@@ -541,10 +541,15 @@ async function run() {
     await advanceThroughUnderwriting(page, data);
   }
 
-  console.log('Reached:', page.url());
-  console.log('Steps past Underwriting Complete (Stacker Check, Pre-Funding, TIL/esign,');
-  console.log('Originated) are not yet mapped. To find the next gate, run:');
-  console.log('  automation-rules-decoder.py --status <substatus> --database orig-sandbox');
+  // The browser stops here; the APPLICATION does not. Measured on 69951: a run
+  // that requested no documents went Offer Selected -> Approved (95) in 65s on
+  // its own, Stacker Check included. So this line reports where the automation
+  // gave up, not how far the application got -- check the sub-status in LoanPro.
+  console.log('Browser stopped at:', page.url());
+  console.log('The application keeps advancing on its own from here. Pages past the');
+  console.log('checklist -- approved, autopay, TIL/esign, funded -- are not yet driven.');
+  console.log('Check where the application actually landed:');
+  console.log('  transaction-log.py <appId> --database orig-sandbox --format timeline');
 
   await browser.close();
 }

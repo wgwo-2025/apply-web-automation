@@ -158,6 +158,54 @@ Be aware that "Keep File" only overrides the **frontend** check. The backend
 verdict still lands as Ocrolus "Invalid document", which permanently blocks the
 underwriting-complete automation rule — see below.
 
+### Skipping document upload with a `fraud_pass` test email
+
+The identity documents have two independent triggers, and the test email only
+turns off one of them. Both were measured in orig-sandbox.
+
+**Social Security Card** is required when the last four digits the borrower
+types do not match the bureau's SSN -- see the `ssnLast4` section below. That is
+data, not a flag, and no email changes it.
+
+**Government Issued ID** is required by `FraudService.applyFc3EmailAndKountRule`,
+which fires when fraud check 3 runs *and* Oscilar's email/Kount rule triggers:
+
+```java
+if (!Objects.equals(fraudCheckInput.getFraudCheckIndex(), 3)
+    || !fraudCheckResponse.isEmailAndKountRuleTriggered()) {
+    return;
+}
+```
+
+`isEmailAndKountRuleTriggered` is an Oscilar verdict, and Oscilar's mocked
+response is steered by the borrower's email address. Applications where it fires
+carry sub-portfolio **141 "Email and Kount"** -- that tag is the tell.
+
+Use an address of this exact shape:
+
+```
+test+dev.offers.approved.fraud_pass.<digits>@happymoney.com
+```
+
+Every segment earns its place, because the grammar has TWO consumers:
+
+| Consumer | Grammar | Effect |
+|---|---|---|
+| Oscilar workflow steering | loose; documented on Confluence pageId 9936797715 | picks the mocked offers/fraud outcome |
+| `underwriting-srv` `TestEmailPatternConfig` | strict: literal `test+`, env segment required, `offers.approved` only, pure-digit trailing id | stops underwriting-srv applying its own fraud bypass, so the mocked result flows through unchanged |
+
+Miss the strict regex and Oscilar still steers, but underwriting-srv keeps its
+bypass on and the mocked fraud result does not survive. Emails are single-use --
+a repeated address is rejected at Cognito signup and the new application ends up
+orphaned from the login.
+
+**This is not a guaranteed document bypass.** Measured over applications created
+since 2026-06-01: 0 of 270 `fraud_pass` applications carry sub-portfolio 141, so
+that path is reliably off -- but 54 of 199 (27%) still ended up with Government
+Issued ID required through a different writer, which has not been isolated. Two
+other writers exist: `buildGovernmentIdChecklist` (bureau name or DOB match
+fails) and `FraudCheckUnderwritingHandler` (`Fraud Detection ID` blank).
+
 ### Getting past underwriting (`loanpro.enabled`)
 
 An application whose documents were uploaded stops at LoanPro sub-status 64
@@ -221,9 +269,34 @@ and still renders `FormSelect` -> `SelectDropdown`, whose options are
 
 ## Known gap
 
-The script reaches Underwriting Complete (sub-status 132). Steps beyond that —
-Stacker Check, Pre-Funding, TIL/esign, Originated — aren't mapped yet. Extend
-`apply-flow.js` once that part of the funnel is walked.
+**Where the script stops is not where the application stops.** On a clean run
+the script's last act is `uploadDocuments()` returning false, after which it
+prints and closes the browser -- so the browser is still sitting on
+`/verify/check-list/<id>` when the run ends. The application meanwhile keeps
+going on its own.
+
+Measured on application 69951 (2026-09-09), a `fraud_pass` run that requested no
+documents. From offer selection to Approved took 65 seconds, unattended:
+
+```
+21:47:44  Offers Shown
+21:47:46  Offer Selected
+21:47:58  Rule: Fraud Check 3 (246)
+21:48:16  Automated Underwriting Requested
+21:48:24  Automated Underwriting Completed
+21:48:27  Underwriting
+21:48:30  Underwriting Complete            (132)
+21:48:33  Stacker Check Requested
+21:48:45  Stacker Check Completed
+21:48:49  Approved                         (95)
+```
+
+So Stacker Check needs no help from the script, and Underwriting Complete is no
+longer the ceiling. What is genuinely unmapped is the **browser** side past the
+checklist: the approved page (`/fund/approved/:applicationId`, `FUND_ROUTE_PATHS`
+in `fund-mfe-ui/src/route-paths.js`), then autopay, TIL/esign, funding account
+and funded. Extend `apply-flow.js` to navigate on from the checklist rather than
+closing there.
 
 Each of those is gated by another LoanPro automation rule. To find the next
 gate, from the `happy-money-assistant` repo:
