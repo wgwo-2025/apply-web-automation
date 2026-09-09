@@ -493,44 +493,53 @@ async function advanceThroughUnderwriting(page, data) {
  * Drives the browser from the verification checklist to the approved page and
  * proves it arrived.
  *
- * The checklist does NOT navigate here by itself. It reloads the application on
- * a 30s interval (VerificationCheckListPage's useInterval) and swaps in a loader,
- * but nothing pushes a new route -- getTerminalRoute only returns the declined
- * and adverse-action routes, never approved. So we drive it: /apply/route/
- * application/<id> re-runs RouteApplication, whose getFundRoute returns the
- * APPROVED route while the partner is unconfirmed, which a freshly approved
- * application always is.
+ * Go DIRECT to /fund/approved/<id>. Do NOT route through
+ * /apply/route/application/<id>: RouteApplication evaluates getVerifyRoute
+ * BEFORE getFundRoute, and getVerifyRoute returns CHECK_LIST whenever
+ * `!isDocumentVerificationCompleted(...)`. LoanPro rule 280 ("Document
+ * Automation - Government Issued ID (Fraud)") writes that document Required
+ * about a second AFTER the application is approved -- measured on 69951 and
+ * 69953, both times a one-second gap -- so from then on the router permanently
+ * resolves an APPROVED application back to the checklist. Polling the router
+ * can never win.
  *
- * Approval is asynchronous and takes real time. Measured on 69951: Offer
- * Selected -> Approved (95) took 65 SECONDS, Stacker Check included. So we poll
- * the router rather than expecting it on the first hop.
+ * The fund MFE's own guard has no such problem: useIsValidRoute asks
+ * getFundRoute alone, which returns the approved route while the partner is
+ * unconfirmed, so a direct hit is accepted and not bounced.
+ *
+ * Approval is asynchronous. Measured on 69951: Offer Selected -> Approved (95)
+ * took 65 SECONDS, Stacker Check included. Until it lands, getFundRoute returns
+ * nothing and the fund MFE redirects away -- which is the retry signal.
  */
 async function reachApprovedPage(page, data, appId) {
+  const approvedUrl = `${data.environment.baseUrl}/fund/approved/${appId}`;
   const deadline = Date.now() + APPROVAL_TIMEOUT_MS;
-  let lastUrl = page.url();
+  let landed = page.url();
 
   while (Date.now() < deadline) {
-    await page.goto(`${data.environment.baseUrl}/apply/route/application/${appId}`);
-    await settleOnApplyStep(page, 45000).catch(() => {});
-    lastUrl = page.url();
+    await page.goto(approvedUrl);
+    // The fund MFE decides on mount whether this path is the right one and
+    // redirects if not, so give it a beat to bounce before believing the URL.
+    await page.waitForTimeout(2000);
+    landed = page.url();
 
-    if (APPROVED_RE.test(lastUrl)) {
+    if (APPROVED_RE.test(landed)) {
       await assertOnApprovedPage(page, appId);
       return;
     }
 
-    // Terminal states the router resolves to instead. No amount of waiting helps.
-    if (/\/offer\/(declined|adverse-action)/.test(lastUrl)) {
-      throw new Error(`Application ${appId} was declined — router landed on ${lastUrl}`);
+    if (/\/offer\/(declined|adverse-action)/.test(landed)) {
+      throw new Error(`Application ${appId} was declined — bounced to ${landed}`);
     }
 
     await page.waitForTimeout(APPROVAL_POLL_MS);
   }
 
   throw new Error(
-    `Application ${appId} did not reach the approved page within ` +
-    `${APPROVAL_TIMEOUT_MS / 1000}s. Last route: ${lastUrl}\n` +
-    '  The application may still be in underwriting rather than approved. Check with:\n' +
+    `Application ${appId} never settled on the approved page within ` +
+    `${APPROVAL_TIMEOUT_MS / 1000}s. Last landed on: ${landed}\n` +
+    '  A bounce back to /verify/check-list/ means the application is not approved\n' +
+    '  yet — getFundRoute only returns the approved route once it is. Check:\n' +
     `  transaction-log.py ${appId} --database orig-sandbox --format timeline`
   );
 }

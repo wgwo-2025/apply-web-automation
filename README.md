@@ -220,6 +220,17 @@ const noRequiredDocUpload = documentVerifications?.length === 0
 checklist item's `status_catalog_id`. So a "Required" row in LoanPro and a
 checklist that auto-passed are not in conflict; they are different signals.
 
+**But post-hoc is not the same as harmless.** That late write does not block
+approval, and it does not un-pass a checklist that already passed -- yet it
+permanently captures the ROUTER. `getVerifyRoute` returns CHECK_LIST whenever
+`!isDocumentVerificationCompleted(...)`, and `RouteApplication` evaluates it
+BEFORE `getFundRoute`, so from the moment rule 280 fires, an approved
+application resolves back to the checklist forever. Two visible consequences:
+a browser left sitting on the checklist flips out of the auto-pass loader into
+the "Let's Wrap This Up!" view on its next 30-second reload, and any attempt to
+reach the approved page THROUGH the router is unwinnable. Go direct instead --
+see the Known gap section.
+
 Two other writers can require the ID genuinely, before the checklist:
 `buildGovernmentIdChecklist` (bureau name or DOB match fails) and
 `FraudCheckUnderwritingHandler` (`Fraud Detection ID` blank). Neither is steered
@@ -316,10 +327,16 @@ longer the ceiling.
 `reachApprovedPage()` now drives the browser the rest of the way and asserts it
 arrived. The checklist does not navigate there on its own -- it reloads the
 application every 30s and swaps in a loader, but nothing pushes a route, because
-`getTerminalRoute` only returns the declined and adverse-action routes. So the
-step re-runs the router at `/apply/route/application/<id>`, whose `getFundRoute`
-returns the approved route while the partner is unconfirmed, and polls until the
-application actually gets there.
+`getTerminalRoute` only returns the declined and adverse-action routes.
+
+**Go direct to `/fund/approved/<id>`; do not route through
+`/apply/route/application/<id>`.** `RouteApplication` evaluates `getVerifyRoute`
+before `getFundRoute`, and rule 280 writes Government Issued ID Required about a
+second after approval, which makes `isDocumentVerificationCompleted` false and
+sends the router back to the checklist permanently. The fund MFE's own guard has
+no such problem: `useIsValidRoute` asks `getFundRoute` alone, so a direct hit is
+accepted. Until the application is actually approved `getFundRoute` returns
+nothing and the fund MFE redirects away, which is what the poll retries on.
 
 Arrival is asserted on the rendered page, not just the URL: a heading matching
 `/Congratulations.*Approved/` or, failing that, `Finalize & Sign`. Matching by
