@@ -291,6 +291,61 @@ and still renders `FormSelect` -> `SelectDropdown`, whose options are
 `selectDropdown()` matches both. When the remaining pages migrate, the
 `li[role="option"]` half becomes dead and can go -- but not before.
 
+## Applications need funnel identifiers or they cannot be allocated
+
+An application created through the LoanPro API -- by `seed-account.js`, or by
+happy-money-assistant's `test-user-manager --native` -- is a bare shell. The
+real funnel assigns three identifiers at signup that the API path does not:
+
+| Field | Example (from a manual walk) |
+|---|---|
+| `Application Guid (cf659)` | `3e0b7bd0-f678-4666-a0fe-c9ff9e85e358` |
+| `Application ID (cf130)` | same value |
+| `PayoffLoanId (cf696)` | `HMc9ff9e85e358` -- `HM` + the guid's last segment |
+
+**Without them the application reaches Approved (95) and stops there
+permanently.** On approval, underwriting-srv's `PartnerAllocationEventConsumer`
+calls `assignInvestor(applicationId)`; the allocation engine finds no guid and
+returns a null `leadGuid`, which fails Avro deserialization inside
+`AllocationEngineClient`:
+
+```
+Call assignInvestor - Allocation Engine failed:
+  Avro Error ... Field leadGuid type:STRING pos:1 does not accept null values
+```
+
+That throws before `getCapitalPartner()` runs, so `Capital Partner (cf231)` is
+never written and the application never advances to Approved Received (124) or
+Allocated (123). `getFundRoute` requires `ALLOCATED && capitalPartner`, so every
+page past the verification checklist is unreachable in the browser -- the
+approved page, autopay, TIL/esign, funded.
+
+`seed-account.js` now writes all three in `stampFunnelIdentifiers()`, so
+`mode: "auto"` produces applications that both decision AND allocate. This
+requires `LOANPRO_TOKEN`, which that path already required.
+
+**Applications from the pool are a different matter.** Anything seeded before
+2026-09-10 -- the whole `[AWA]` batch, and anything from `test-user-manager
+--native` -- lacks these fields and will stall at Approved. Check before
+assuming an account is good:
+
+```sh
+python3.11 tools/execute-analytics-query.py --database orig-sandbox --format csv \
+  "SELECT cf.custom_field_id, cf.custom_field_value FROM loan_settings_entity lse
+   JOIN custom_field__entity cf ON lse.id=cf.entity_id AND cf.entity_type='Entity.LoanSettings'
+   WHERE lse.loan_id=<appId> AND cf.custom_field_id IN (130,659,696)"
+```
+
+Three rows means it can allocate. No rows means it cannot, and the fields have
+to be written before the run.
+
+**Measured 2026-09-10.** Applications 69951, 69953 and 69954 all stalled at
+Approved with no capital partner. Application 70089 was given these three fields
+before its run and allocated to FTCU within seconds of Approved. The only
+variable changed was the stamp. The same limitation is documented for the
+sibling path in `test-user-manager.py`, whose native builder deliberately
+creates "the minimum an identity needs and nothing more".
+
 ## Known gap
 
 **Where the script stops is not where the application stops.** On a clean run

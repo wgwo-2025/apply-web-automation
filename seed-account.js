@@ -22,9 +22,19 @@
  * unverified email). Emails are single-use, which is why every run mints a new
  * timestamped address rather than reusing one.
  */
+const { randomUUID } = require('crypto');
 const { request } = require('playwright');
 
 const LOANPRO_BASE = 'https://happymoney.simnang.com/api/public/api/1';
+
+// The identifiers the real funnel assigns at signup. A bare application created
+// through the API has none of them, and WITHOUT THEM THE APPLICATION CANNOT BE
+// ALLOCATED -- see stampFunnelIdentifiers().
+const CUSTOM_FIELD = {
+  APPLICATION_ID: 130,
+  APPLICATION_GUID: 659,
+  PAYOFF_LOAN_ID: 696,
+};
 const APPLY_BFF = {
   dev: 'https://originations-dev.happymoney.com/services/apply-bff',
   stage: 'https://originations-stage.happymoney.com/services/apply-bff',
@@ -141,7 +151,69 @@ async function createLoanProApplication(api, email, cfg) {
     throw new Error(`borrower link reported 200 but customer ${customerId} is not on application ${loanId}`);
   }
 
+  await stampFunnelIdentifiers(api, loanId);
+
   return { customerId, applicationId: String(loanId) };
+}
+
+/**
+ * Writes the three identifiers the real funnel assigns at signup and an
+ * API-created application does not have.
+ *
+ * WITHOUT THESE THE APPLICATION REACHES Approved (95) AND STOPS THERE, FOREVER.
+ * The chain, measured 2026-09-10 across five applications:
+ *
+ *   underwriting-srv's PartnerAllocationEventConsumer fires on approval and
+ *   calls allocationEngineClient.assignInvestor(applicationId). The engine looks
+ *   the application up, finds no GUID, and returns a response whose leadGuid is
+ *   null -- which fails Avro deserialization inside AllocationEngineClient:
+ *
+ *     Call assignInvestor - Allocation Engine failed:
+ *       Avro Error ... Field leadGuid type:STRING pos:1 does not accept null values
+ *
+ *   That throws before getCapitalPartner() is ever reached, so Capital Partner
+ *   (cf231) is never written, the application never advances to Approved
+ *   Received (124) or Allocated (123), and getFundRoute -- which requires
+ *   ALLOCATED && capitalPartner -- returns null, making every page past the
+ *   verification checklist unreachable in the browser.
+ *
+ * Applications 69951, 69953 and 69954 all stalled exactly there. Application
+ * 70089 was given these three fields before its run and allocated to FTCU
+ * within seconds of Approved. The only variable changed was this stamp.
+ *
+ * leadGuid IS the application guid: on a manually-walked application (70020)
+ * the engine returned leadGuid 3e0b7bd0-f678-4666-a0fe-c9ff9e85e358 and cf130 /
+ * cf659 both held that same value, with cf696 = HMc9ff9e85e358 -- 'HM' plus the
+ * guid's last segment, which is the derivation reproduced here.
+ */
+async function stampFunnelIdentifiers(api, loanId) {
+  const guid = randomUUID();
+  const payoffLoanId = `HM${guid.split('-').pop()}`;
+
+  const res = await api.put(`${LOANPRO_BASE}/odata.svc/Loans(${loanId})`, {
+    data: {
+      __update: true,
+      __id: loanId,
+      LoanSettings: {
+        __update: true,
+        customFieldValues: {
+          results: [
+            { customFieldId: CUSTOM_FIELD.APPLICATION_GUID, customFieldValue: guid },
+            { customFieldId: CUSTOM_FIELD.APPLICATION_ID, customFieldValue: guid },
+            { customFieldId: CUSTOM_FIELD.PAYOFF_LOAN_ID, customFieldValue: payoffLoanId },
+          ],
+        },
+      },
+    },
+  });
+  if (!res.ok()) {
+    throw new Error(
+      `funnel identifier stamp failed (${res.status()}) on application ${loanId}: ` +
+      `${(await res.text()).slice(0, 300)}\n` +
+      '  Without these the application cannot be allocated and will stop at Approved.'
+    );
+  }
+  console.log(`  guid ${guid} · payoffLoanId ${payoffLoanId}`);
 }
 
 async function seedAccount(data) {
