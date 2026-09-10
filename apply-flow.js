@@ -256,6 +256,14 @@ async function confirmApplicationSummary(page) {
 // reached yet. Reloading is worse than waiting: polling state lives in a module
 // -level object whose `attempts` resets to 1 on mount, so a reload throws away
 // the progress made so far and starts the 120s again.
+// Allocation is asynchronous and happens AFTER approval. Measured on 70020 (a
+// manual walk): Offers Shown -> Approved took 113s, then underwriting-srv wrote
+// the capital partner and advanced to Allocated 13s later. On 70089 (seeded and
+// stamped) allocation landed within seconds of Approved. Budget past both.
+const ALLOCATION_TIMEOUT_MS = 240000;
+const ALLOCATION_POLL_MS = 10000;
+const APPROVED_RE = /\/fund\/approved\//;
+
 const OFFERS_POLL_BUDGET_MS = 24 * 5 * 1000;
 const OFFERS_POLL_TIMEOUT_MS = OFFERS_POLL_BUDGET_MS + 30000; // + margin for render
 
@@ -482,6 +490,92 @@ async function advanceThroughUnderwriting(page, data) {
   }
 }
 
+/**
+ * Drives the browser from the verification checklist to the approved page.
+ *
+ * THE GATE IS ALLOCATION, NOT NAVIGATION. getFundRoute returns null unless the
+ * application is ALLOCATED (123) *and* carries a capital partner:
+ *
+ *   isApplicationApproved = (app) =>
+ *     app?.loanSubStatus === ALLOCATED && !!app?.capitalPartner
+ *
+ * Until then the fund MFE's useIsValidRoute gets no route, sets isValid false
+ * and redirects away -- which is what this polls on, and why a bounce here means
+ * "not allocated yet" rather than "wrong URL".
+ *
+ * An application seeded WITHOUT the funnel identifiers never allocates at all
+ * (see seed-account.js stampFunnelIdentifiers) and will exhaust the whole budget
+ * bouncing. The error says so rather than blaming the navigation.
+ *
+ * Go direct rather than through /apply/route/application/<id>: RouteApplication
+ * evaluates getVerifyRoute BEFORE getFundRoute, and getVerifyRoute claims the
+ * route whenever isInVerificationStatus -- which includes Approved. The fund
+ * MFE's own guard consults getFundRoute alone, so a direct hit is accepted.
+ */
+async function reachApprovedPage(page, data, appId) {
+  const approvedUrl = `${data.environment.baseUrl}/fund/approved/${appId}`;
+  const deadline = Date.now() + ALLOCATION_TIMEOUT_MS;
+  let landed = page.url();
+
+  while (Date.now() < deadline) {
+    await page.goto(approvedUrl);
+    // The fund MFE decides on mount and redirects if the route is not yet
+    // valid, so give it a beat before believing the URL.
+    await page.waitForTimeout(2000);
+    landed = page.url();
+
+    if (APPROVED_RE.test(landed)) {
+      await assertOnApprovedPage(page, appId);
+      return;
+    }
+
+    if (/\/offer\/(declined|adverse-action)/.test(landed)) {
+      throw new Error(`Application ${appId} was declined — bounced to ${landed}`);
+    }
+
+    await page.waitForTimeout(ALLOCATION_POLL_MS);
+  }
+
+  throw new Error(
+    `Application ${appId} never reached the approved page within ` +
+    `${ALLOCATION_TIMEOUT_MS / 1000}s. Last landed on: ${landed}\n` +
+    '  This is almost always allocation, not navigation. Check:\n' +
+    `    transaction-log.py ${appId} --database orig-sandbox --format timeline\n` +
+    '  Capital Partner (cf231) empty means it never allocated — most likely the\n' +
+    '  application was seeded without Application Guid (cf659). See the README.'
+  );
+}
+
+/**
+ * Confirms the approved page actually RENDERED, not merely that the URL matches
+ * -- a blank render or an error boundary would still sit on the right path.
+ *
+ * The heading is split across a <br> in Approved.js ("Congratulations, You're"
+ * + " Approved!"), so a literal string match fails. getByRole computes the
+ * accessible name from concatenated text content, which restores it, and the
+ * regex sidesteps the apostrophe being an entity in the DOM. "Finalize & Sign"
+ * is a second target in case the hero copy changes.
+ */
+async function assertOnApprovedPage(page, appId) {
+  const heading = page.getByRole('heading', { name: /Congratulations.*Approved/i });
+  const fallback = page.getByRole('heading', { name: /Finalize\s*&\s*Sign/i });
+
+  const arrived = await Promise.any([
+    heading.waitFor({ timeout: 30000 }).then(() => 'heading'),
+    fallback.waitFor({ timeout: 30000 }).then(() => 'fallback'),
+  ]).catch(() => null);
+
+  if (!arrived) {
+    const headings = await page.getByRole('heading').allTextContents();
+    throw new Error(
+      `URL is the approved page for ${appId} but neither the approval heading nor ` +
+      `"Finalize & Sign" rendered.\n  headings: ${JSON.stringify(headings)}`
+    );
+  }
+
+  console.log(`  APPROVED — ${page.url()}`);
+}
+
 async function run() {
   const data = loadData();
   const browser = await chromium.launch({ headless: false });
@@ -541,22 +635,11 @@ async function run() {
     await advanceThroughUnderwriting(page, data);
   }
 
-  // The browser stops here; the APPLICATION keeps going without it. Measured on
-  // 70020 (a MANUAL walk): Offers Shown -> Allocated in 113s, unattended.
-  //
-  // Driving the browser onward is deliberately NOT attempted. Two earlier
-  // attempts failed because the automated runs never got a capital partner
-  // assigned — 69951 and 69953 both sat at Approved (95) with
-  // `Allocation Status (cf496)` = 1 but `Capital Partner (cf231)` empty, while
-  // 70020 had underwriting-srv write cf231=MERRICK and advance to Allocated
-  // three seconds later. getFundRoute requires a capital partner, so with none
-  // the approved page genuinely cannot be reached, and no amount of navigating
-  // changes that. Fix the allocation first; only then add the page walk.
   const appId = applicationIdFromUrl(page.url());
-  console.log(`Browser stopped at: ${page.url()}`);
-  console.log('Check whether the application allocated and carried on without it:');
-  console.log(`  transaction-log.py ${appId} --database orig-sandbox --format timeline`);
-  console.log('  A Capital Partner (cf231) value means it allocated; empty means it stalled.');
+  await reachApprovedPage(page, data, appId);
+
+  console.log('Browser stopped at:', page.url());
+  console.log('Pages past approved — autopay, TIL/esign, funded — are not yet driven.');
 
   await browser.close();
 }

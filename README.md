@@ -373,11 +373,17 @@ documents. From offer selection to Approved took 65 seconds, unattended:
 So Stacker Check needs no help from the script, and Underwriting Complete is no
 longer the ceiling.
 
-### The automated runs do not get a capital partner
+### RESOLVED: the runs now allocate, and the walk reaches the approved page
 
-**This is the open blocker, and it is not a browser problem.** Two attempts to
-drive the browser to the approved page were written and both removed, because
-the page is genuinely unreachable when the application has no capital partner:
+The blocker below was allocation, not navigation. It is fixed -- seeded
+applications are now stamped with the funnel identifiers (see the section above)
+and allocate normally, and `reachApprovedPage()` drives the browser the rest of
+the way. Application 70089 was the first: stamped, walked, allocated to FTCU.
+
+The history is kept because the failure mode is worth recognising if it recurs.
+
+**The page is genuinely unreachable when the application has no capital
+partner:**
 
 ```js
 isApplicationApproved = (app) => app?.loanSubStatus === ALLOCATED && !!app?.capitalPartner
@@ -399,11 +405,16 @@ On 70020, underwriting-srv wrote all three in one second and the status moved to
 Allocated three seconds later. On the automated runs that block never fired: the
 allocation ENGINE ran (cf496 = 1 everywhere) but no partner was written back.
 
-So the allocation is what to fix, and only then the page walk. Two untested
-candidates for the difference: the removed `reachApprovedPage` was re-navigating
-every 10s and may have interfered (its polling is what the repeated
-`Attr Url` / `Attr Ip` / `Attr Id` writes on 69953 are), or the script skips a
-step the manual walk performs.
+The cause was the missing `Application Guid` -- the allocation engine had no
+`leadGuid` to return. Both earlier theories (polling interference, a skipped
+step) were wrong.
+
+`reachApprovedPage()` goes DIRECT to `/fund/approved/<id>`, not through
+`/apply/route/application/<id>`: `RouteApplication` evaluates `getVerifyRoute`
+before `getFundRoute`, and `getVerifyRoute` claims the route whenever
+`isInVerificationStatus` -- which includes Approved. The fund MFE's own
+`useIsValidRoute` consults `getFundRoute` alone, so a direct hit is accepted once
+the application is Allocated. Before that it bounces, which is the retry signal.
 
 To check after any run:
 
