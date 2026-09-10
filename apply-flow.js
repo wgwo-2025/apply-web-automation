@@ -625,8 +625,11 @@ async function linkFundingAccount(page, data) {
   // "How do I find it?" help). While it is shown and the account has not passed,
   // the page-level Continue is not rendered at all, so the one Continue on screen
   // is the group's own, which runs the GIACT check.
+  // exact: true on the middle one -- getByRole's name is a SUBSTRING match by
+  // default, so 'Account Number' also hits 'Retype Account Number' and strict
+  // mode refuses to pick between them.
   await page.getByRole('textbox', { name: 'Routing Number' }).fill(bank.routingNumber);
-  await page.getByRole('textbox', { name: 'Account Number' }).fill(bank.accountNumber);
+  await page.getByRole('textbox', { name: 'Account Number', exact: true }).fill(bank.accountNumber);
   await page.getByRole('textbox', { name: 'Retype Account Number' }).fill(bank.accountNumber);
 
   const continues = page.getByRole('button', { name: /^Continue$/ });
