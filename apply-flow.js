@@ -256,13 +256,6 @@ async function confirmApplicationSummary(page) {
 // reached yet. Reloading is worse than waiting: polling state lives in a module
 // -level object whose `attempts` resets to 1 on mount, so a reload throws away
 // the progress made so far and starts the 120s again.
-// Approval is asynchronous. Measured on 69951: Offer Selected -> Approved (95)
-// in 65s, Stacker Check included. Budget well past that so a slow decision reads
-// as slow rather than as a failure.
-const APPROVAL_TIMEOUT_MS = 240000;
-const APPROVAL_POLL_MS = 10000;
-const APPROVED_RE = /\/fund\/approved\//;
-
 const OFFERS_POLL_BUDGET_MS = 24 * 5 * 1000;
 const OFFERS_POLL_TIMEOUT_MS = OFFERS_POLL_BUDGET_MS + 30000; // + margin for render
 
@@ -489,89 +482,6 @@ async function advanceThroughUnderwriting(page, data) {
   }
 }
 
-/**
- * Drives the browser from the verification checklist to the approved page and
- * proves it arrived.
- *
- * Go DIRECT to /fund/approved/<id>. Do NOT route through
- * /apply/route/application/<id>: RouteApplication evaluates getVerifyRoute
- * BEFORE getFundRoute, and getVerifyRoute returns CHECK_LIST whenever
- * `!isDocumentVerificationCompleted(...)`. LoanPro rule 280 ("Document
- * Automation - Government Issued ID (Fraud)") writes that document Required
- * about a second AFTER the application is approved -- measured on 69951 and
- * 69953, both times a one-second gap -- so from then on the router permanently
- * resolves an APPROVED application back to the checklist. Polling the router
- * can never win.
- *
- * The fund MFE's own guard has no such problem: useIsValidRoute asks
- * getFundRoute alone, which returns the approved route while the partner is
- * unconfirmed, so a direct hit is accepted and not bounced.
- *
- * Approval is asynchronous. Measured on 69951: Offer Selected -> Approved (95)
- * took 65 SECONDS, Stacker Check included. Until it lands, getFundRoute returns
- * nothing and the fund MFE redirects away -- which is the retry signal.
- */
-async function reachApprovedPage(page, data, appId) {
-  const approvedUrl = `${data.environment.baseUrl}/fund/approved/${appId}`;
-  const deadline = Date.now() + APPROVAL_TIMEOUT_MS;
-  let landed = page.url();
-
-  while (Date.now() < deadline) {
-    await page.goto(approvedUrl);
-    // The fund MFE decides on mount whether this path is the right one and
-    // redirects if not, so give it a beat to bounce before believing the URL.
-    await page.waitForTimeout(2000);
-    landed = page.url();
-
-    if (APPROVED_RE.test(landed)) {
-      await assertOnApprovedPage(page, appId);
-      return;
-    }
-
-    if (/\/offer\/(declined|adverse-action)/.test(landed)) {
-      throw new Error(`Application ${appId} was declined — bounced to ${landed}`);
-    }
-
-    await page.waitForTimeout(APPROVAL_POLL_MS);
-  }
-
-  throw new Error(
-    `Application ${appId} never settled on the approved page within ` +
-    `${APPROVAL_TIMEOUT_MS / 1000}s. Last landed on: ${landed}\n` +
-    '  A bounce back to /verify/check-list/ means the application is not approved\n' +
-    '  yet — getFundRoute only returns the approved route once it is. Check:\n' +
-    `  transaction-log.py ${appId} --database orig-sandbox --format timeline`
-  );
-}
-
-/**
- * Confirms we are really on the approved page rather than a URL that merely
- * looks right — a blank render or an error boundary would still match the path.
- *
- * The heading is split across a <br> in the source ("Congratulations, You're"
- * + " Approved!"), so a literal string match fails. getByRole computes the
- * accessible name from the concatenated text content, which restores it; the
- * regex also sidesteps the apostrophe being an entity in the DOM.
- */
-async function assertOnApprovedPage(page, appId) {
-  const heading = page.getByRole('heading', { name: /Congratulations.*Approved/i });
-  const fallback = page.getByRole('heading', { name: /Finalize\s*&\s*Sign/i });
-
-  await Promise.race([
-    heading.waitFor({ timeout: 30000 }),
-    fallback.waitFor({ timeout: 30000 }),
-  ]).catch(async () => {
-    const headings = await page.getByRole('heading').allTextContents();
-    throw new Error(
-      `URL is the approved page for ${appId} but neither the approval heading nor ` +
-      `"Finalize & Sign" rendered.\n  headings: ${JSON.stringify(headings)}`
-    );
-  });
-
-  console.log(`  APPROVED — ${page.url()}`);
-  console.log(`  heading: ${(await heading.textContent().catch(() => null)) || 'Finalize & Sign'}`);
-}
-
 async function run() {
   const data = loadData();
   const browser = await chromium.launch({ headless: false });
@@ -631,11 +541,22 @@ async function run() {
     await advanceThroughUnderwriting(page, data);
   }
 
+  // The browser stops here; the APPLICATION keeps going without it. Measured on
+  // 70020 (a MANUAL walk): Offers Shown -> Allocated in 113s, unattended.
+  //
+  // Driving the browser onward is deliberately NOT attempted. Two earlier
+  // attempts failed because the automated runs never got a capital partner
+  // assigned — 69951 and 69953 both sat at Approved (95) with
+  // `Allocation Status (cf496)` = 1 but `Capital Partner (cf231)` empty, while
+  // 70020 had underwriting-srv write cf231=MERRICK and advance to Allocated
+  // three seconds later. getFundRoute requires a capital partner, so with none
+  // the approved page genuinely cannot be reached, and no amount of navigating
+  // changes that. Fix the allocation first; only then add the page walk.
   const appId = applicationIdFromUrl(page.url());
-  await reachApprovedPage(page, data, appId);
-
-  console.log('Browser stopped at:', page.url());
-  console.log('Pages past approved — autopay, TIL/esign, funded — are not yet driven.');
+  console.log(`Browser stopped at: ${page.url()}`);
+  console.log('Check whether the application allocated and carried on without it:');
+  console.log(`  transaction-log.py ${appId} --database orig-sandbox --format timeline`);
+  console.log('  A Capital Partner (cf231) value means it allocated; empty means it stalled.');
 
   await browser.close();
 }

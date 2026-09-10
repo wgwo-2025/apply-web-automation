@@ -220,16 +220,10 @@ const noRequiredDocUpload = documentVerifications?.length === 0
 checklist item's `status_catalog_id`. So a "Required" row in LoanPro and a
 checklist that auto-passed are not in conflict; they are different signals.
 
-**But post-hoc is not the same as harmless.** That late write does not block
-approval, and it does not un-pass a checklist that already passed -- yet it
-permanently captures the ROUTER. `getVerifyRoute` returns CHECK_LIST whenever
-`!isDocumentVerificationCompleted(...)`, and `RouteApplication` evaluates it
-BEFORE `getFundRoute`, so from the moment rule 280 fires, an approved
-application resolves back to the checklist forever. Two visible consequences:
-a browser left sitting on the checklist flips out of the auto-pass loader into
-the "Let's Wrap This Up!" view on its next 30-second reload, and any attempt to
-reach the approved page THROUGH the router is unwinnable. Go direct instead --
-see the Known gap section.
+One visible side effect: a browser left sitting on the checklist flips out of
+the auto-pass loader into the "Let's Wrap This Up!" view on its next 30-second
+reload, because that reload now sees the document. The application is already
+approved by then; the view is a late re-render, not a gate.
 
 Two other writers can require the ID genuinely, before the checklist:
 `buildGovernmentIdChecklist` (bureau name or DOB match fails) and
@@ -324,27 +318,46 @@ documents. From offer selection to Approved took 65 seconds, unattended:
 So Stacker Check needs no help from the script, and Underwriting Complete is no
 longer the ceiling.
 
-`reachApprovedPage()` now drives the browser the rest of the way and asserts it
-arrived. The checklist does not navigate there on its own -- it reloads the
-application every 30s and swaps in a loader, but nothing pushes a route, because
-`getTerminalRoute` only returns the declined and adverse-action routes.
+### The automated runs do not get a capital partner
 
-**Go direct to `/fund/approved/<id>`; do not route through
-`/apply/route/application/<id>`.** `RouteApplication` evaluates `getVerifyRoute`
-before `getFundRoute`, and rule 280 writes Government Issued ID Required about a
-second after approval, which makes `isDocumentVerificationCompleted` false and
-sends the router back to the checklist permanently. The fund MFE's own guard has
-no such problem: `useIsValidRoute` asks `getFundRoute` alone, so a direct hit is
-accepted. Until the application is actually approved `getFundRoute` returns
-nothing and the fund MFE redirects away, which is what the poll retries on.
+**This is the open blocker, and it is not a browser problem.** Two attempts to
+drive the browser to the approved page were written and both removed, because
+the page is genuinely unreachable when the application has no capital partner:
 
-Arrival is asserted on the rendered page, not just the URL: a heading matching
-`/Congratulations.*Approved/` or, failing that, `Finalize & Sign`. Matching by
-role rather than by string is deliberate -- the heading is split across a `<br>`
-in `Approved.js`, so a literal comparison fails while the accessible name
-concatenates it back together.
+```js
+isApplicationApproved = (app) => app?.loanSubStatus === ALLOCATED && !!app?.capitalPartner
+```
 
-Still unmapped past that point: autopay, TIL/esign, funding account and funded.
+`getFundRoute` requires one, so with none there is no fund route to navigate to.
+
+Measured across three applications with the same email shape, the same
+`test-data.json` values and the same deployed build:
+
+| | 70020 (manual walk) | 69951, 69953 (Playwright) |
+|---|---|---|
+| `Allocation Status (cf496)` | 1 | 1 |
+| `Capital Partner (cf231)` | **MERRICK** | empty |
+| `Capital Partner Allocation Date (cf232)` | 2026-09-09 23:54:09 | empty |
+| Final sub-status | Allocated (123) | stuck at Approved (95) |
+
+On 70020, underwriting-srv wrote all three in one second and the status moved to
+Allocated three seconds later. On the automated runs that block never fired: the
+allocation ENGINE ran (cf496 = 1 everywhere) but no partner was written back.
+
+So the allocation is what to fix, and only then the page walk. Two untested
+candidates for the difference: the removed `reachApprovedPage` was re-navigating
+every 10s and may have interfered (its polling is what the repeated
+`Attr Url` / `Attr Ip` / `Attr Id` writes on 69953 are), or the script skips a
+step the manual walk performs.
+
+To check after any run:
+
+```sh
+transaction-log.py <appId> --database orig-sandbox --format timeline
+```
+
+A `Capital Partner` value means it allocated. Empty means it stalled at 95, and
+nothing downstream -- approved, autopay, TIL/esign, funded -- is reachable.
 
 Each of those is gated by another LoanPro automation rule. To find the next
 gate, from the `happy-money-assistant` repo:
