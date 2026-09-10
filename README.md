@@ -261,10 +261,44 @@ above — not a product behavior, and off by default.
 | `offerSelection.offerIndex` | Which of the 4 offer terms to pick (0 = lowest APR ... 3 = lowest payment) |
 | `otp.mode` | `"skip"` (default) exhausts resend attempts and clicks the in-app Skip button; `"prompt"` waits for you to type a real code |
 | `documentUpload.ssnCardPath` / `.addressVerificationPath` / `.govIdPath` | Paths to the 3 documents, relative to this folder. Only used when the checklist actually requests documents |
+| `fundingAccount.routingNumber` / `.accountNumber` | Bank pair entered on the funding-account page; must pass GIACT |
 | `loanpro.enabled` | `true` clears the underwriting blockers via the LoanPro API after an upload, so the run continues past sub-status 64. Needs `LOANPRO_TOKEN`. Default `false` |
 
 Copy `test-data.json` to a new file per scenario (e.g. `scenarios/high-income.json`)
 and pass it with `--data=`.
+
+## Past approved: funding account and autopay
+
+Three more pages are driven after the approved page, read from the deployed
+`fund-mfe-ui`:
+
+| Page | What the script does | Gate it satisfies |
+|---|---|---|
+| `/fund/approved/:id` | click **Continue** | `confirmPartner` -> `Capital Partner Privacy Policy Consent Date (cf233)` |
+| `/fund/funding-account/:id` | "Linked account(s)" -> **Link other account**; fill Routing / Account / Retype; the group's Continue runs **GIACT**; once it passes the page's Continue appears; **Confirm & continue** | a payment account, active and visible |
+| `/fund/autopay/:id` | pick the just-linked account; Continue; **Confirm & continue** | `Autopay Capture Date (cf235)` |
+
+It stops on `/fund/truth-in-lending/:id`. Direct card payoff is skipped because
+`SKIP_DIRECT_CARD_PAYOFF` is ON in dev.
+
+**The bank pair matters.** `fundingAccount` in `test-data.json` is the data
+factory's auto-pass persona's (`routingNumber` 271081528, `accountNumber`
+2710815280016, `plaidUser: custom_plaid_and_giact`), which its own description
+says passes bank verification. GIACT is a real external check; other numbers
+turn the run into a GIACT experiment. If it fails the error names the routing
+number, the group's button text and any alert or dialog on screen.
+
+**The funding-account fields are inline, not in a modal.** `BankLinkingInputGroup`
+renders on the page; its only `Modal` is the "How do I find it?" help. While it is
+shown and GIACT has not passed, the page-level Continue is not rendered at all --
+so the script waits for a *second* Continue button to appear rather than for
+text, which is the signal that `isAccountPass` flipped.
+
+**Still unmapped:** Truth in Lending needs a real generated TIL PDF on checklist
+item 96 (`loanpro_docgen`, a backend step), e-sign is an embedded DocuSign flow
+with a callback, and the funded page is `/fund/funded/:id`. Every existing
+funded-page test account in the team's recipes was *seeded* at sub-status 67,
+not walked through e-sign.
 
 ## Selectors track a deployed build, not a branch
 

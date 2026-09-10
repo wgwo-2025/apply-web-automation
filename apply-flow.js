@@ -263,6 +263,12 @@ async function confirmApplicationSummary(page) {
 const ALLOCATION_TIMEOUT_MS = 240000;
 const ALLOCATION_POLL_MS = 10000;
 const APPROVED_RE = /\/fund\/approved\//;
+const FUNDING_ACCOUNT_RE = /\/fund\/funding-account\//;
+const AUTOPAY_RE = /\/fund\/autopay\//;
+const TIL_RE = /\/fund\/truth-in-lending\//;
+// GIACT verifies the manually-entered account server-side before the page's
+// Continue enables. It is an external call and can take a while.
+const GIACT_TIMEOUT_MS = 60000;
 
 const OFFERS_POLL_BUDGET_MS = 24 * 5 * 1000;
 const OFFERS_POLL_TIMEOUT_MS = OFFERS_POLL_BUDGET_MS + 30000; // + margin for render
@@ -576,6 +582,117 @@ async function assertOnApprovedPage(page, appId) {
   console.log(`  APPROVED — ${page.url()}`);
 }
 
+/**
+ * Approved page. Continue calls confirmPartner -> PUT /fund/applications/<id>/
+ * partnerPolicy/accept, which writes Capital Partner Privacy Policy Consent
+ * Date (cf233). ApprovedPage then routes by flow: a non-refi application with
+ * no funding account goes to funding-account; one that already has an account
+ * skips ahead to autopay. Accept either.
+ */
+async function confirmApproved(page) {
+  await page.getByRole('button', { name: 'Continue' }).click();
+  await page.waitForURL((u) => FUNDING_ACCOUNT_RE.test(String(u)) || AUTOPAY_RE.test(String(u)), { timeout: 30000 });
+  console.log(`  partner confirmed — ${page.url()}`);
+}
+
+/**
+ * Funding account page. A seeded application has no bank accounts, so the
+ * "Linked account(s)" dropdown offers only "Link other account". Choosing it
+ * opens BankLinkingInputGroup's modal: Routing Number / Account Number / Retype
+ * Account Number and its own Continue, which runs a GIACT check
+ * (data/api/bankAccountVerification.js). Only when that passes does the page's
+ * Continue enable (isContinueButtonDisabled = !isAccountPass while manual
+ * linking is shown). Then FundingConfirmationModal -> "Confirm & continue".
+ *
+ * The routing/account pair in test-data.json is the data factory's auto-pass
+ * persona's (data_factory_models.py PRESETS['auto-pass'], plaidUser
+ * custom_plaid_and_giact) -- the pair its own description says passes bank
+ * verification. Any other numbers are a GIACT experiment, not a funnel test.
+ */
+async function linkFundingAccount(page, data) {
+  if (!FUNDING_ACCOUNT_RE.test(page.url())) {
+    console.log('  funding-account step not shown — an account already exists; skipping.');
+    return;
+  }
+  const bank = data.fundingAccount;
+  if (!bank?.routingNumber || !bank?.accountNumber) {
+    throw new Error('test-data.json needs fundingAccount.routingNumber and fundingAccount.accountNumber');
+  }
+
+  await selectDropdown(page, /Select account|Linked account/, 'Link other account');
+
+  // BankLinkingInputGroup renders INLINE on the page (its only Modal is the
+  // "How do I find it?" help). While it is shown and the account has not passed,
+  // the page-level Continue is not rendered at all, so the one Continue on screen
+  // is the group's own, which runs the GIACT check.
+  await page.getByRole('textbox', { name: 'Routing Number' }).fill(bank.routingNumber);
+  await page.getByRole('textbox', { name: 'Account Number' }).fill(bank.accountNumber);
+  await page.getByRole('textbox', { name: 'Retype Account Number' }).fill(bank.accountNumber);
+
+  const continues = page.getByRole('button', { name: /^Continue$/ });
+  // Disabled until the form validates and the routing-number lookup settles.
+  await waitForEnabled(continues.first(), 20000);
+  await continues.first().click();
+
+  // GIACT pass -> isAccountPass -> the page-level Continue appears as a SECOND
+  // Continue button. Fail -> it never appears; the group shows an error, or the
+  // 3333 doc-upload modal opens. Wait on the second button rather than on text.
+  try {
+    await page.waitForFunction(
+      () => document.querySelectorAll('button').length &&
+            Array.from(document.querySelectorAll('button'))
+              .filter((b) => /^\s*Continue\s*$/.test(b.textContent || '')).length >= 2,
+      null,
+      { timeout: GIACT_TIMEOUT_MS },
+    );
+  } catch (e) {
+    const alerts = await page.getByRole('alert').allTextContents().catch(() => []);
+    const dialogs = await page.getByRole('dialog').allTextContents().catch(() => []);
+    const btn = await continues.first().textContent().catch(() => '');
+    throw new Error(
+      `Funding account was not accepted within ${GIACT_TIMEOUT_MS / 1000}s — GIACT did not pass ` +
+      `for routing ${bank.routingNumber} / account ending ${bank.accountNumber.slice(-4)}.\n` +
+      `  group button: "${(btn || '').trim()}"\n` +
+      `  alerts : ${JSON.stringify(alerts)}\n  dialogs: ${JSON.stringify(dialogs).slice(0, 400)}`
+    );
+  }
+  const pageContinue = continues.last();
+  await waitForEnabled(pageContinue, 20000);
+  await pageContinue.click();
+
+  await page.getByRole('button', { name: /Confirm\s*&\s*continue/i }).click();
+  await page.waitForURL((u) => AUTOPAY_RE.test(String(u)), { timeout: 45000 });
+  console.log(`  funding account linked — ${page.url()}`);
+}
+
+/**
+ * Autopay page (DiscountAutopayContent under DYNAMIC_VERIFICATION +
+ * ENABLE_AUTO_PAY_DISCOUNT, both ON in dev). The dropdown now carries the
+ * account just linked but does NOT pre-select it (only a refi default is
+ * auto-selected), so pick the first real option, then Continue ->
+ * PaymentConfirmationModal -> "Confirm & continue".
+ *
+ * Where it lands next depends on flags: SKIP_DIRECT_CARD_PAYOFF is ON in dev,
+ * so the next page is truth-in-lending. Accept direct-card-payoff too in case
+ * that flips.
+ */
+async function selectAutopayAccount(page) {
+  await page.getByRole('button', { name: /Select account|Linked account/ }).click();
+  const option = page.locator('[role="menuitem"], li[role="option"]')
+    .filter({ hasNotText: 'Link other account' })
+    .first();
+  await option.waitFor({ timeout: 15000 });
+  await option.click();
+
+  const cont = page.getByRole('button', { name: /^Continue$/ }).last();
+  await waitForEnabled(cont, 20000);
+  await cont.click();
+
+  await page.getByRole('button', { name: /Confirm\s*&\s*continue/i }).click();
+  await page.waitForURL((u) => TIL_RE.test(String(u)) || /\/fund\/direct-card-payoff\//.test(String(u)), { timeout: 45000 });
+  console.log(`  autopay account selected — ${page.url()}`);
+}
+
 async function run() {
   const data = loadData();
   const browser = await chromium.launch({ headless: false });
@@ -637,9 +754,12 @@ async function run() {
 
   const appId = applicationIdFromUrl(page.url());
   await reachApprovedPage(page, data, appId);
+  await confirmApproved(page);
+  await linkFundingAccount(page, data);
+  await selectAutopayAccount(page);
 
   console.log('Browser stopped at:', page.url());
-  console.log('Pages past approved — autopay, TIL/esign, funded — are not yet driven.');
+  console.log('Truth in Lending, e-sign and funded are not yet driven.');
 
   await browser.close();
 }

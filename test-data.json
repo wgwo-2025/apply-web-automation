@@ -50,6 +50,10 @@
     "addressVerificationPath": "./test-docs/address-verification.png",
     "govIdPath": "./test-docs/gov-id.png"
   },
+  "fundingAccount": {
+    "routingNumber": "271081528",
+    "accountNumber": "2710815280016"
+  },
   "loanpro": {
     "enabled": false
   }
