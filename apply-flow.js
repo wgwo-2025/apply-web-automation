@@ -521,7 +521,14 @@ async function advanceThroughUnderwriting(page, data) {
 async function reachApprovedPage(page, data, appId) {
   const approvedUrl = `${data.environment.baseUrl}/fund/approved/${appId}`;
   const deadline = Date.now() + ALLOCATION_TIMEOUT_MS;
-  const heading = page.getByRole('heading', { name: /Congratulations.*Approved|Finalize\s*&\s*Sign/i });
+  // .first() is load-bearing. Approved.js renders BOTH an h1
+  // "Congratulations, You're Approved!" and an h2 "Finalize & Sign", so an
+  // alternating regex matches two headings and waitFor() throws a strict-mode
+  // violation -- which the race below swallows as "neither", so a fully
+  // ALLOCATED application polls for the whole budget and then reports that it
+  // never arrived. Measured on 70104: Allocated with Capital Partner FTCU while
+  // the run failed at 240s.
+  const heading = page.getByRole('heading', { name: /Congratulations.*Approved|Finalize\s*&\s*Sign/i }).first();
   let landed = page.url();
 
   while (Date.now() < deadline) {
