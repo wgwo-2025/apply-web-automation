@@ -521,24 +521,32 @@ async function advanceThroughUnderwriting(page, data) {
 async function reachApprovedPage(page, data, appId) {
   const approvedUrl = `${data.environment.baseUrl}/fund/approved/${appId}`;
   const deadline = Date.now() + ALLOCATION_TIMEOUT_MS;
+  const heading = page.getByRole('heading', { name: /Congratulations.*Approved|Finalize\s*&\s*Sign/i });
   let landed = page.url();
 
   while (Date.now() < deadline) {
     await page.goto(approvedUrl);
-    // The fund MFE decides on mount and redirects if the route is not yet
-    // valid, so give it a beat before believing the URL.
-    await page.waitForTimeout(2000);
+
+    // The URL is NOT a signal. The fund MFE loads the application, then either
+    // renders (allocated) or redirects away (not yet) -- and for the second or
+    // two before it decides, page.url() still reads /fund/approved/ while the
+    // DOM is whatever the previous page left behind. Measured on 70101: the URL
+    // matched, the assertion then found the CHECKLIST's own copy ("Thanks for
+    // sticking with us!") and failed. So race the two real outcomes instead.
+    const outcome = await Promise.race([
+      heading.waitFor({ timeout: 20000 }).then(() => 'rendered'),
+      page.waitForURL((u) => !APPROVED_RE.test(String(u)), { timeout: 20000 }).then(() => 'bounced'),
+    ]).catch(() => 'neither');
     landed = page.url();
 
-    if (APPROVED_RE.test(landed)) {
-      await assertOnApprovedPage(page, appId);
+    if (outcome === 'rendered') {
+      console.log(`  APPROVED — ${landed}`);
       return;
     }
-
     if (/\/offer\/(declined|adverse-action)/.test(landed)) {
       throw new Error(`Application ${appId} was declined — bounced to ${landed}`);
     }
-
+    // 'bounced' or 'neither': not allocated yet. Wait and try again.
     await page.waitForTimeout(ALLOCATION_POLL_MS);
   }
 
@@ -547,39 +555,11 @@ async function reachApprovedPage(page, data, appId) {
     `${ALLOCATION_TIMEOUT_MS / 1000}s. Last landed on: ${landed}\n` +
     '  This is almost always allocation, not navigation. Check:\n' +
     `    transaction-log.py ${appId} --database orig-sandbox --format timeline\n` +
-    '  Capital Partner (cf231) empty means it never allocated — most likely the\n' +
-    '  application was seeded without Application Guid (cf659). See the README.'
+    '  Still at Underwriting (64) means Rule 259 has not fired -- usually a\n' +
+    '  fraud-check-3 that never wrote its identity verdicts (cf602 missing).\n' +
+    '  At Approved (95) with Capital Partner (cf231) empty means it never\n' +
+    '  allocated -- most likely no Application Guid (cf659). See the README.'
   );
-}
-
-/**
- * Confirms the approved page actually RENDERED, not merely that the URL matches
- * -- a blank render or an error boundary would still sit on the right path.
- *
- * The heading is split across a <br> in Approved.js ("Congratulations, You're"
- * + " Approved!"), so a literal string match fails. getByRole computes the
- * accessible name from concatenated text content, which restores it, and the
- * regex sidesteps the apostrophe being an entity in the DOM. "Finalize & Sign"
- * is a second target in case the hero copy changes.
- */
-async function assertOnApprovedPage(page, appId) {
-  const heading = page.getByRole('heading', { name: /Congratulations.*Approved/i });
-  const fallback = page.getByRole('heading', { name: /Finalize\s*&\s*Sign/i });
-
-  const arrived = await Promise.any([
-    heading.waitFor({ timeout: 30000 }).then(() => 'heading'),
-    fallback.waitFor({ timeout: 30000 }).then(() => 'fallback'),
-  ]).catch(() => null);
-
-  if (!arrived) {
-    const headings = await page.getByRole('heading').allTextContents();
-    throw new Error(
-      `URL is the approved page for ${appId} but neither the approval heading nor ` +
-      `"Finalize & Sign" rendered.\n  headings: ${JSON.stringify(headings)}`
-    );
-  }
-
-  console.log(`  APPROVED — ${page.url()}`);
 }
 
 /**
