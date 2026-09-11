@@ -663,7 +663,32 @@ async function linkFundingAccount(page, data) {
     throw new Error('test-data.json needs fundingAccount.routingNumber and fundingAccount.accountNumber');
   }
 
-  await selectDropdown(page, /Select account|Linked account/, 'Link other account');
+  // Prefer an account that is ALREADY linked. Forcing "Link other account"
+  // submits routing/account numbers, and that submission is a LIVE GIACT call:
+  // on a synthetic pair it fails ownership AND underwriting-srv hides the
+  // existing profile (visible 1 -> 0), so a run that could have continued
+  // destroys the very account that would have carried it. Measured on 70104,
+  // 2026-09-11.
+  const accountTrigger = page.locator('[role="button"][aria-haspopup="listbox"]').first();
+  await accountTrigger.click();
+  const existing = page.locator('[role="menuitem"], li[role="option"]')
+    .filter({ hasNotText: /Link other account/i });
+  if (await existing.count()) {
+    const label = ((await existing.first().textContent()) || '').replace(/\s+/g, ' ').trim();
+    console.log(`  using the linked account already on file: ${label}`);
+    await existing.first().click();
+    const continueBtn = page.getByRole('button', { name: /^\s*Continue\s*$/ }).last();
+    await waitForEnabled(continueBtn, 20000);
+    await continueBtn.click();
+    await page.getByRole('button', { name: /Confirm\s*&\s*continue/i }).click();
+    await page.waitForURL((u) => AUTOPAY_RE.test(String(u)), { timeout: 45000 });
+    console.log(`  funding account confirmed — ${page.url()}`);
+    return;
+  }
+  await page.locator('[role="menuitem"], li[role="option"]')
+    .filter({ hasText: /Link other account/i })
+    .first()
+    .click();
 
   // BankLinkingInputGroup renders INLINE on the page (its only Modal is the
   // "How do I find it?" help). While it is shown and the account has not passed,

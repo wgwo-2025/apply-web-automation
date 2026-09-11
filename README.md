@@ -378,6 +378,19 @@ gated on `isActivePaymentAccount` (`fund-mfe-ui/src/hooks/useAutoPayment.js`),
 which requires `bank.active && !bank.giact_check_required`. Only an ops
 document review flips those, so the upload path ends in a queue, not in autopay.
 
+🔴 **A failed GIACT run also HIDES the account you already had.** The route
+takes `hasFundingAccount` = some bank with `active && visible === 1`
+(`fund-mfe-ui/src/utils/loanApplication.js:28`). On 70104 a seeded profile was
+`active=1, visible=1` at 21:50; the script forced "Link other account" anyway,
+GIACT failed at 22:02:51, and that same minute underwriting-srv flipped the
+seeded profile to `visible=0`. So the page is not merely a dead end — entering
+bank details there is destructive. `linkFundingAccount` now selects an account
+already on file and only falls back to manual entry when the dropdown has none.
+
+`visible` is not repairable over the API: a PUT setting it returns 200 and
+changes nothing. Destroy the profile (`__destroy`) and create a fresh one — new
+profiles come in `visible=1`.
+
 By contrast the QA data factory never runs GIACT for its fund-stage templates —
 it stamps `cf193='pass'`, `cf740=1`, `cf745=1`, `cf931=1`, `cf936=1`, `cf610=2`
 and creates the payment profile `active=1` (see application 69467). That is how
