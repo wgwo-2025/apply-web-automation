@@ -351,6 +351,17 @@ and still renders `FormSelect` -> `SelectDropdown`, whose options are
 `selectDropdown()` matches both. When the remaining pages migrate, the
 `li[role="option"]` half becomes dead and can go -- but not before.
 
+## Reusing an account that is already past approval
+
+`accounts.json` entries are consumed in order and marked `used` after login.
+An entry whose application is ALLOCATED (sub-status 123) is still worth
+running: apply-web resumes it in the **fund** stage, and the script now skips
+apply, offers and verification and drives whatever fund page is on screen
+(`walkFundSteps`). Set `"used": false` on such an entry to replay it.
+
+Accounts whose application never left Started (60) replay the whole funnel,
+which is what the pool was originally for.
+
 ## Applications need funnel identifiers or they cannot be allocated
 
 An application created through the LoanPro API -- by `seed-account.js`, or by

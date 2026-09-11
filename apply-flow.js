@@ -167,15 +167,19 @@ async function settleOnApplyStep(page, timeout = 45000) {
     return APPLY_STEPS.some((x) => x.re.test(url))
       || /\/apply\/application-selection/.test(url)
       || /\/offer\//.test(url)
-      || /\/verify\//.test(url);
+      || /\/verify\//.test(url)
+      // An ALLOCATED application resumes straight into the fund stage. Reading
+      // that as "login failed" is what it looked like the first time a pooled
+      // account was reused past approval.
+      || FUND_RE.test(url);
   }, { timeout });
 }
 
 function stepNameFromUrl(url) {
   const step = APPLY_STEPS.find((x) => x.re.test(String(url)));
   if (step) return step.name;
-  const m = String(url).match(/\/apply\/([^/?#]+)/);
-  return m ? m[1] : 'an unrecognised page';
+  const m = String(url).match(/\/(apply|offer|verify|fund)\/([^/?#]+)/);
+  return m ? `${m[1]}/${m[2]}` : 'an unrecognised page';
 }
 
 async function walkApplySteps(page, data) {
@@ -262,6 +266,7 @@ async function confirmApplicationSummary(page) {
 // stamped) allocation landed within seconds of Approved. Budget past both.
 const ALLOCATION_TIMEOUT_MS = 240000;
 const ALLOCATION_POLL_MS = 10000;
+const FUND_RE = /\/fund\//;
 const APPROVED_RE = /\/fund\/approved\//;
 const FUNDING_ACCOUNT_RE = /\/fund\/funding-account\//;
 const AUTOPAY_RE = /\/fund\/autopay\//;
@@ -546,6 +551,30 @@ async function advanceThroughUnderwriting(page, data) {
  * route whenever isInVerificationStatus -- which includes Approved. The fund
  * MFE's own guard consults getFundRoute alone, so a direct hit is accepted.
  */
+/**
+ * The fund section, in order. Same reasoning as APPLY_STEPS: a pooled account
+ * whose application is already ALLOCATED resumes partway through, so drive the
+ * step that is on screen instead of a fixed sequence. Without this, reusing a
+ * part-walked account replayed the whole funnel and died on the first wait.
+ */
+const FUND_STEPS = [
+  { name: 'approved', re: APPROVED_RE, run: (p) => confirmApproved(p) },
+  { name: 'funding-account', re: FUNDING_ACCOUNT_RE, run: (p, d) => linkFundingAccount(p, d) },
+  { name: 'autopay', re: AUTOPAY_RE, run: (p) => selectAutopayAccount(p) },
+];
+
+async function walkFundSteps(page, data) {
+  // + 2 so a step that re-renders its own URL cannot spin forever.
+  for (let guard = 0; guard < FUND_STEPS.length + 2; guard += 1) {
+    const url = page.url();
+    if (TIL_RE.test(url)) return;
+    const step = FUND_STEPS.find((x) => x.re.test(url));
+    if (!step) return;
+    console.log(`  fund step: ${step.name}`);
+    await step.run(page, data);
+  }
+}
+
 async function reachApprovedPage(page, data, appId) {
   const approvedUrl = `${data.environment.baseUrl}/fund/approved/${appId}`;
   const deadline = Date.now() + ALLOCATION_TIMEOUT_MS;
@@ -759,23 +788,28 @@ async function run() {
   await reportDeployedBuild(page);
   reportFeatureFlags(flags);
 
-  await walkApplySteps(page, data);
+  // An ALLOCATED application lands in the fund stage at login, with offers,
+  // identity and documents already behind it. Replaying those would fail on
+  // pages that no longer render.
+  if (!FUND_RE.test(page.url())) {
+    await walkApplySteps(page, data);
 
-  await page.waitForURL(/\/offer\/offers\//, { timeout: 30000 });
-  await selectOffer(page, data);
-  await verifyIdentity(page, data);
-  await handleSmsOtp(page, data);
-  const uploaded = await uploadDocuments(page, data);
+    await page.waitForURL(/\/offer\/offers\//, { timeout: 30000 });
+    await selectOffer(page, data);
+    await verifyIdentity(page, data);
+    await handleSmsOtp(page, data);
+    const uploaded = await uploadDocuments(page, data);
 
-  if (uploaded) {
-    await advanceThroughUnderwriting(page, data);
+    if (uploaded) {
+      await advanceThroughUnderwriting(page, data);
+    }
+
+    await reachApprovedPage(page, data, applicationIdFromUrl(page.url()));
+  } else {
+    console.log(`Resumed in the fund stage at ${stepNameFromUrl(page.url())} — skipping apply, offers and verification.`);
   }
 
-  const appId = applicationIdFromUrl(page.url());
-  await reachApprovedPage(page, data, appId);
-  await confirmApproved(page);
-  await linkFundingAccount(page, data);
-  await selectAutopayAccount(page);
+  await walkFundSteps(page, data);
 
   console.log('Browser stopped at:', page.url());
   console.log('Truth in Lending, e-sign and funded are not yet driven.');
