@@ -271,6 +271,9 @@ const APPROVED_RE = /\/fund\/approved\//;
 const FUNDING_ACCOUNT_RE = /\/fund\/funding-account\//;
 const AUTOPAY_RE = /\/fund\/autopay\//;
 const TIL_RE = /\/fund\/truth-in-lending\//;
+const DOCUSIGN_CALLBACK_RE = /\/fund\/docusign-callback\//;
+const DOCUSIGN_RE = /docusign\.(net|com)/i;
+const TIL_PDF_TIMEOUT_MS = 60000;
 // GIACT verifies the manually-entered account server-side before the page's
 // Continue enables. It is an external call and can take a while.
 const GIACT_TIMEOUT_MS = 60000;
@@ -552,6 +555,55 @@ async function advanceThroughUnderwriting(page, data) {
  * MFE's own guard consults getFundRoute alone, so a direct hit is accepted.
  */
 /**
+ * Truth in Lending. The CTA is `disabled: isLoading || !temporaryTILPdfUrl`
+ * (TruthInLendingContent.js), and that URL comes from
+ * GET /documents/til-download, which apply-bff serves from Smart Checklist
+ * item 96 keeping only items WITH an attachment. A factory-seeded application
+ * that never had a TIL generated therefore renders this page fine and leaves
+ * the button dead forever — so a disabled button is a DATA problem, not a
+ * timing one, and is reported as such.
+ *
+ * Clicking is ONE-SHOT: it PUTs /til/accept (writes TIL Acknowledged Date
+ * (cf236)), rule 228 advances the application to sub-status 105, and then the
+ * page hands off to DocuSign via window.location. There is no way back.
+ */
+async function acceptTruthInLending(page) {
+  const cta = page.getByRole('button', { name: /Continue with E-?sign/i }).first();
+  await cta.waitFor({ timeout: 30000 });
+
+  try {
+    await waitForEnabled(cta, TIL_PDF_TIMEOUT_MS);
+  } catch {
+    const appId = applicationIdFromUrl(page.url());
+    throw new Error(
+      `The TIL page rendered but "Continue with E-sign" stayed disabled for ` +
+      `${TIL_PDF_TIMEOUT_MS / 1000}s, which means apply-bff returned no TIL PDF for ` +
+      `application ${appId}.\n` +
+      '  Smart Checklist item 96 (Truth in Lending) has no attachment. Generate one\n' +
+      '  with loanpro_docgen (see README "Truth in Lending needs a real document").'
+    );
+  }
+
+  await cta.click();
+
+  // Either the DocuSign hand-off succeeds (off-site) or generateDocusignUrl
+  // throws and the page falls back to its own callback route.
+  const landed = await Promise.race([
+    page.waitForURL((u) => DOCUSIGN_RE.test(String(u)), { timeout: 60000 }).then(() => 'docusign'),
+    page.waitForURL((u) => DOCUSIGN_CALLBACK_RE.test(String(u)), { timeout: 60000 }).then(() => 'callback'),
+  ]).catch(() => 'neither');
+
+  console.log(`  TIL accepted — handed off to ${landed}: ${page.url()}`);
+  if (landed === 'callback') {
+    console.log('  (that is the FALLBACK route — generateDocusignUrl failed, so no envelope exists.)');
+  }
+  if (landed === 'neither') {
+    const headings = await page.locator('h1, h2').allTextContents().catch(() => []);
+    console.log(`  headings: ${JSON.stringify(headings.map((h) => h.trim()).slice(0, 4))}`);
+  }
+}
+
+/**
  * The fund section, in order. Same reasoning as APPLY_STEPS: a pooled account
  * whose application is already ALLOCATED resumes partway through, so drive the
  * step that is on screen instead of a fixed sequence. Without this, reusing a
@@ -561,13 +613,13 @@ const FUND_STEPS = [
   { name: 'approved', re: APPROVED_RE, run: (p) => confirmApproved(p) },
   { name: 'funding-account', re: FUNDING_ACCOUNT_RE, run: (p, d) => linkFundingAccount(p, d) },
   { name: 'autopay', re: AUTOPAY_RE, run: (p) => selectAutopayAccount(p) },
+  { name: 'truth-in-lending', re: TIL_RE, run: (p) => acceptTruthInLending(p) },
 ];
 
 async function walkFundSteps(page, data) {
   // + 2 so a step that re-renders its own URL cannot spin forever.
   for (let guard = 0; guard < FUND_STEPS.length + 2; guard += 1) {
     const url = page.url();
-    if (TIL_RE.test(url)) return;
     const step = FUND_STEPS.find((x) => x.re.test(url));
     if (!step) return;
     console.log(`  fund step: ${step.name}`);
@@ -853,7 +905,7 @@ async function run() {
   await walkFundSteps(page, data);
 
   console.log('Browser stopped at:', page.url());
-  console.log('Truth in Lending, e-sign and funded are not yet driven.');
+  console.log('E-sign (DocuSign) and funded are not yet driven.');
 
   await browser.close();
 }

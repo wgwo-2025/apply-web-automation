@@ -400,6 +400,35 @@ So: this script walks the funnel end to end as far as the funding-account page,
 which is as far as a synthetic borrower can go unattended. Anything past it
 needs an application whose funding account was seeded that way.
 
+## Truth in Lending needs a real document
+
+The TIL page renders without one, but `Continue with E-sign` is
+`disabled: isLoading || !temporaryTILPdfUrl` — and that URL comes from
+`GET /documents/til-download`, which apply-bff serves out of **Smart Checklist
+item 96**, keeping only items that actually carry an attachment. An application
+that never had a TIL generated leaves the button dead forever, so a disabled
+CTA here is a data problem, not a slow page.
+
+Generate one (Halle has the LoanPro credentials; sandbox TIL template is 34):
+
+```
+python3.11 -c "
+import sys; sys.path.insert(0,'tools'); sys.path.insert(0,'tools/doc_gen')
+from loanpro_test_base import get_loanpro_config, parse_environment
+import loanpro_docgen as dg
+print(dg.generate_and_upload(get_loanpro_config(parse_environment('orig-sandbox')), <loanId>, 'til', 'orig-sandbox'))"
+```
+
+**Clicking is one-shot.** It PUTs `/til/accept` (writes `TIL Acknowledged Date
+(cf236)`), rule 228 advances the application to sub-status 105, and the page
+then hands off to DocuSign through `window.location`. There is no way back —
+build a fresh application rather than trying to rewind one.
+
+The script stops at that hand-off. Whether it lands on DocuSign itself or on
+`/fund/docusign-callback/:id` (the fallback when `generateDocusignUrl` throws)
+is reported, because the two mean very different things: the callback route
+means no envelope was ever created.
+
 ## Reusing an account that is already past approval
 
 `accounts.json` entries are consumed in order and marked `used` after login.
