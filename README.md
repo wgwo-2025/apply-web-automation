@@ -351,6 +351,42 @@ and still renders `FormSelect` -> `SelectDropdown`, whose options are
 `selectDropdown()` matches both. When the remaining pages migrate, the
 `li[role="option"]` half becomes dead and can go -- but not before.
 
+## The funding-account page is the dev ceiling
+
+GIACT runs against PRODUCTION credentials from every environment — there is no
+dev stub and no TestMode account configured. The reference pair in
+`test-data.json` (`271081528` / `2710815280016`) is a fabricated account, so
+GIACT can confirm the routing number but holds no OWNER record for it.
+
+Measured on application 70100, 2026-09-11 21:34 UTC:
+
+| Field | Value | Meaning |
+|---|---|---|
+| `Bank 1 Giact Account Response Code (cf193)` | `ND00` | no data on the account — not itself a failure |
+| `Bank 1 Giact Account Status (cf740)` | `1` | Pass |
+| `Bank 1 Giact Ownership Status (cf745)` | `2` | **Fail** |
+| `Bank 1 Giact Customer Response Code (cf192)` | empty | no ownership data, not an adverse mismatch |
+| `Bank Account Validation 1 (cf610)` | `3` | Fail |
+
+Consequences on the application: rule 248 `Bank Account Validation 1 - Fail`,
+rule 278 `Document Review Process - Review Needed`, portfolios `GIACT (181)`,
+`Document Review (162)` and `Ineligible Account (190)`, and a payment profile
+created with `active = 0`.
+
+**Uploading a document in the dialog does not rescue the run.** Continue is
+gated on `isActivePaymentAccount` (`fund-mfe-ui/src/hooks/useAutoPayment.js`),
+which requires `bank.active && !bank.giact_check_required`. Only an ops
+document review flips those, so the upload path ends in a queue, not in autopay.
+
+By contrast the QA data factory never runs GIACT for its fund-stage templates —
+it stamps `cf193='pass'`, `cf740=1`, `cf745=1`, `cf931=1`, `cf936=1`, `cf610=2`
+and creates the payment profile `active=1` (see application 69467). That is how
+autopay, TIL and e-sign get exercised.
+
+So: this script walks the funnel end to end as far as the funding-account page,
+which is as far as a synthetic borrower can go unattended. Anything past it
+needs an application whose funding account was seeded that way.
+
 ## Reusing an account that is already past approval
 
 `accounts.json` entries are consumed in order and marked `used` after login.

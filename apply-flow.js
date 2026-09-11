@@ -696,9 +696,25 @@ async function linkFundingAccount(page, data) {
     const alerts = await page.getByRole('alert').allTextContents().catch(() => []);
     const dialogs = await page.getByRole('dialog').allTextContents().catch(() => []);
     const btn = await continues.first().textContent().catch(() => '');
+    // GIACT is a LIVE production vendor call even from dev, so an invented
+    // routing/account pair can never clear the OWNERSHIP axis: GIACT holds no
+    // owner record for it, underwriting-srv writes Bank 1 Giact Ownership
+    // Status = Fail, the new payment profile is created INACTIVE, and the
+    // application picks up the Document Review / GIACT / Ineligible Account
+    // portfolios. Measured on 70100, 2026-09-11.
+    const ownershipDialog = dialogs.some((d) => /verify ownership|ownership of this bank account/i.test(d));
     throw new Error(
       `Funding account was not accepted within ${GIACT_TIMEOUT_MS / 1000}s — GIACT did not pass ` +
       `for routing ${bank.routingNumber} / account ending ${bank.accountNumber.slice(-4)}.\n` +
+      (ownershipDialog ?
+        '  This is the OWNERSHIP-verification dialog, and it is the expected outcome in dev:\n' +
+        '  the test routing/account pair belongs to no real accountholder, so GIACT returns no\n' +
+        '  ownership data and the account is created inactive. Uploading a document does NOT\n' +
+        '  unblock the run either — Continue stays disabled until the account is active and\n' +
+        '  giact_check_required is false (useAutoPayment.isActivePaymentAccount), which only an\n' +
+        '  ops document review clears. Past this page, drive an application whose funding\n' +
+        '  account was seeded (see README "The funding-account page is the dev ceiling").\n' :
+        '') +
       `  group button: "${(btn || '').trim()}"\n` +
       `  alerts : ${JSON.stringify(alerts)}\n  dialogs: ${JSON.stringify(dialogs).slice(0, 400)}`
     );
