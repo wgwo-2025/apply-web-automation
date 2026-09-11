@@ -274,6 +274,27 @@ const OFFERS_POLL_BUDGET_MS = 24 * 5 * 1000;
 const OFFERS_POLL_TIMEOUT_MS = OFFERS_POLL_BUDGET_MS + 30000; // + margin for render
 
 /** Dumps what is actually on the offers page, so a miss is diagnosable in one round. */
+/**
+ * go-dev serves whatever branch was last dispatched to it (see README). The
+ * build stamps itself into <meta name="version"> as <semver>-<short sha>, so
+ * the sha says which branch's selectors -- and which branch's bugs -- this run
+ * is up against. Log it up front: every failure below is easier to read next
+ * to it, and a sha that is not on releases/release-092026 is the first thing
+ * to check when a page that worked yesterday breaks today.
+ */
+async function reportDeployedBuild(page) {
+  const version = await page.locator('meta[name="version"]').getAttribute('content').catch(() => null);
+  if (!version) {
+    console.log('Deployed build: unknown — <meta name="version"> is missing.');
+    return;
+  }
+  const sha = (version.match(/-([0-9a-f]{7,})(?:-|$)/) || [])[1];
+  console.log(
+    `Deployed build: ${version}` +
+    (sha ? `  (git log -1 ${sha} in apply-web tells you the branch)` : '')
+  );
+}
+
 async function reportOffersPageState(page) {
   const shot = `offers-failure-${Date.now()}.png`;
   await page.screenshot({ path: shot, fullPage: true }).catch(() => {});
@@ -288,6 +309,13 @@ async function reportOffersPageState(page) {
   console.log(`  radios     : ${await page.getByRole('radio').count()}`);
   console.log(`  listboxes  : ${await page.locator('[aria-haspopup="listbox"]').count()}`);
   console.log(`  screenshot : ${shot}`);
+  if (/\/error(?:[/?#]|$)/.test(page.url())) {
+    console.log(
+      '  /error is GlobalErrorBoundary: the offers page threw during render. That is\n' +
+      '  the deployed build, not this application -- open the browser console for the\n' +
+      '  TypeError and check the "Deployed build" sha above against releases/release-092026.'
+    );
+  }
   console.log('-------------------------');
 }
 
@@ -728,6 +756,7 @@ async function run() {
     await page.waitForURL(/\/apply\/loan-details\//, { timeout: 20000 });
   }
 
+  await reportDeployedBuild(page);
   reportFeatureFlags(flags);
 
   await walkApplySteps(page, data);

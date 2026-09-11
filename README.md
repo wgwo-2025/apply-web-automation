@@ -314,6 +314,32 @@ from 2026-08-24 to 2026-09-09 while go-dev moved from `main` (Aug 26) to
 `releases/release-092026`, and the first run after that broke on About You's
 citizenship dropdown -- a selector that was correct when written.
 
+The script prints `Deployed build: <semver>-<sha>` right after login (it reads
+`<meta name="version">`); `git log -1 <sha>` in apply-web names the branch.
+Check it first whenever a page that passed yesterday fails today.
+
+### go-dev can be overwritten by anyone's feature branch
+
+Measured 2026-09-11: application 70105 reached the offers page and landed on
+`/error` ("Something went wrong!"). Nothing was wrong with the application --
+its offers and `#attributionsurl` note were fine and identical in shape to
+70104, which had passed the night before. What changed was go-dev: at 12:21 UTC
+a developer dispatched `thuynh/ORIG-3357-post-hero-height-to-parent`
+(`6a24435`, branched from the release on 2026-08-21) on top of the
+`releases/release-092026` deploy. That branch still carries the legacy offers
+page that ORIG-3324 deleted on 2026-09-06, selected by the LaunchDarkly flag
+`OFFER_PAGE_VERSION`. Every dev deploy re-applies the LD flags from its own
+branch's terraform into one shared state, so the day's alternating deploys
+deleted and recreated that flag three times; after the last recreation the
+client-side SDK stopped serving it at all, the app fell through to the legacy
+page, and the legacy page throws on 5+ featured offers
+(`getOfferCardStyles` returns 4 styles, ORIG-3073 raised the featured count
+to 6): `TypeError: Cannot read properties of undefined (reading 'title')`.
+
+None of that is reachable from this script. The fix is a redeploy of
+`releases/release-092026` to dev (the `pipeline` workflow, `workflow_dispatch`),
+and the application resumes from Offers Shown untouched once it is.
+
 ### Two dropdown implementations are live at once
 
 ORIG-3005 migrated About You and Contact Details to `FormDropdown`, built on
