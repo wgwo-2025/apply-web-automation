@@ -273,6 +273,8 @@ const AUTOPAY_RE = /\/fund\/autopay\//;
 const TIL_RE = /\/fund\/truth-in-lending\//;
 const DOCUSIGN_CALLBACK_RE = /\/fund\/docusign-callback\//;
 const DOCUSIGN_RE = /docusign\.(net|com)/i;
+const FUNDED_RE = /\/fund\/funded\//;
+const DOCUSIGN_TABS = 'button[data-qa*="-tab-required-"]';
 const TIL_PDF_TIMEOUT_MS = 60000;
 // GIACT verifies the manually-entered account server-side before the page's
 // Continue enables. It is an external call and can take a while.
@@ -604,6 +606,70 @@ async function acceptTruthInLending(page) {
 }
 
 /**
+ * DocuSign's embedded signing session. This is a THIRD-PARTY page — its
+ * selectors are not ours and can change without warning — so match on
+ * `data-qa`, which is the most stable handle it exposes, rather than on
+ * visible text.
+ *
+ * Two behaviours worth knowing, both measured on the demo environment
+ * (apps-d.docusign.com, site=demo.docusign.net) on 2026-09-12:
+ *
+ *  - An "AI-Assisted" callout opens over the document and swallows the first
+ *    click on a signature tab. Dismiss it first.
+ *  - `data-qa` keeps saying `-tab-required-` even AFTER a tab is signed, so it
+ *    is useless as a completion signal. The text is what changes: "Required -
+ *    Sign Here" becomes "Required - Signature Applied". Check that instead.
+ *
+ * The adopt dialog ("Adopt Your Signature") appears only for the FIRST
+ * signature or set of initials; once adopted, later tabs fill on one click.
+ * Both paths are handled.
+ */
+async function signDocuSign(page) {
+  const callout = page.locator('button[data-qa="tools-callout-panel-close-button"]');
+  if (await callout.count()) {
+    await callout.first().click().catch(() => {});
+    await page.waitForTimeout(1500);
+  }
+
+  const tabs = page.locator(DOCUSIGN_TABS);
+  await tabs.first().waitFor({ timeout: 60000 });
+  const count = await tabs.count();
+  console.log(`  ${count} field(s) to sign`);
+
+  for (let i = 0; i < count; i += 1) {
+    const tab = tabs.nth(i);
+    await tab.scrollIntoViewIfNeeded().catch(() => {});
+    await tab.click();
+    await page.waitForTimeout(2000);
+    const adopt = page.locator('button[data-qa="adopt-submit"]');
+    if (await adopt.count()) {
+      await adopt.first().click();
+      await page.waitForTimeout(3000);
+    }
+  }
+
+  const unsigned = await page.locator(DOCUSIGN_TABS).evaluateAll(
+    (els) => els.filter((el) => !/Applied/i.test(el.innerText || '')).length
+  );
+  if (unsigned) {
+    throw new Error(
+      `${unsigned} DocuSign field(s) are still unsigned — Finish would be rejected. ` +
+      'Either a tab was off-screen, or the adopt dialog did not close.'
+    );
+  }
+
+  await page.locator('button[data-qa="action-bar-btn-finish"], button[data-qa="envelope-finish"]')
+    .first()
+    .click();
+
+  // The envelope's returnUrl points back at /fund/docusign-callback/:id, which
+  // waits 5s and then forwards to the funded page.
+  await page.waitForURL((u) => !DOCUSIGN_RE.test(String(u)), { timeout: 120000 });
+  console.log(`  e-signed — ${page.url()}`);
+  await page.waitForURL((u) => FUNDED_RE.test(String(u)), { timeout: 60000 }).catch(() => {});
+}
+
+/**
  * The fund section, in order. Same reasoning as APPLY_STEPS: a pooled account
  * whose application is already ALLOCATED resumes partway through, so drive the
  * step that is on screen instead of a fixed sequence. Without this, reusing a
@@ -614,6 +680,7 @@ const FUND_STEPS = [
   { name: 'funding-account', re: FUNDING_ACCOUNT_RE, run: (p, d) => linkFundingAccount(p, d) },
   { name: 'autopay', re: AUTOPAY_RE, run: (p) => selectAutopayAccount(p) },
   { name: 'truth-in-lending', re: TIL_RE, run: (p) => acceptTruthInLending(p) },
+  { name: 'e-sign', re: DOCUSIGN_RE, run: (p) => signDocuSign(p) },
 ];
 
 async function walkFundSteps(page, data) {
@@ -905,7 +972,9 @@ async function run() {
   await walkFundSteps(page, data);
 
   console.log('Browser stopped at:', page.url());
-  console.log('E-sign (DocuSign) and funded are not yet driven.');
+  if (FUNDED_RE.test(page.url())) {
+    console.log('Funded page reached — the funnel ran end to end.');
+  }
 
   await browser.close();
 }
