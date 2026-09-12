@@ -1,0 +1,7 @@
+{
+  "_comment": "Copy to accounts.json (gitignored) and fill in. Each entry is a pre-seeded, Cognito-CONFIRMED borrower with an empty LoanPro application at sub-status 60 (Started). apply-flow.js consumes one per run when account.mode is 'login', marking it used so the next run takes the next free one. Seed more with tools/test-user-manager.py — see README.",
+  "accounts": [
+    { "email": "someone+tag01@happymoney.com", "password": "REPLACE-ME", "applicationId": "00000", "used": false },
+    { "email": "someone+tag02@happymoney.com", "password": "REPLACE-ME", "applicationId": "00000", "used": false }
+  ]
+}
